@@ -1,0 +1,11 @@
+     nx  rho  len_scale
+0   100    0        0.1
+1   200    0        0.1
+2   500    0        0.1
+3  1000    0        0.1
+Traceback (most recent call last):
+  File "/home/jqin1/RFcorr/test/sim.py", line 14, in <module>
+    import src
+  File "/home/jqin1/RFcorr/test/../src.py", line 2, in <module>
+    import gstools as gs
+ModuleNotFoundError: No module named 'gstools'

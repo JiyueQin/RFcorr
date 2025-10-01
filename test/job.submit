@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH --job-name='test'
+#SBATCH --output='out.%j.%N'
+#SBATCH --partition=shared
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=2G
+#SBATCH --account=csd864
+#SBATCH --export=ALL
+#SBATCH -t 1:00:00
+source ~/.bashrc
+conda activate nilearn
+python -u sim.py
