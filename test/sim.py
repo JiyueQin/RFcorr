@@ -10,6 +10,7 @@ len_scale_ls = [0.1]
 setting_df = pd.DataFrame(product(nx_ls, rho_ls, len_scale_ls), columns=['nx', 'rho', 'len_scale'])
 print(setting_df)
 
+# add parent folder to seatch path so we can import src
 sys.path.append("..")
 import src
 
