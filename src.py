@@ -1,5 +1,6 @@
 import numpy as np
-#import gstools as gs
+
+# import gstools as gs
 import pandas as pd
 import warnings
 from scipy.ndimage import gaussian_filter
@@ -440,8 +441,16 @@ def corr_old(
 from functools import reduce
 
 
-def corr(X, Y, M="cubic_root", true_rho=None, method="bartlett", check=False, 
-         b_qs=5, constant = 1):
+def corr(
+    X,
+    Y,
+    M="cubic_root",
+    true_rho=None,
+    method="bartlett",
+    check=False,
+    b_qs=5,
+    constant=1,
+):
     start_time = time.time()
     if X.shape != Y.shape:
         raise ValueError("X and Y must have the same shape")
@@ -464,12 +473,12 @@ def corr(X, Y, M="cubic_root", true_rho=None, method="bartlett", check=False,
     else:
         # --------weight function and truncation lag numbder -----------
         if M == "cubic_root":
-            M_tuple = constant*np.ceil(dim**0.3)
+            M_tuple = constant * np.ceil(dim**0.3)
         elif M == "linear":
-            M_tuple = constant*np.floor(dim / 5)
+            M_tuple = constant * np.floor(dim / 5)
             # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
         elif M == "auto":
-            M_tuple = constant*np.ceil(dim** (n_dim/(n_dim+2)))
+            M_tuple = constant * np.ceil(dim ** (n_dim / (n_dim + 2)))
         elif isinstance(M, int):
             M_tuple = (M,)
         elif isinstance(M, tuple) and all(isinstance(x, numbers.Number) for x in M):
@@ -539,7 +548,7 @@ def corr(X, Y, M="cubic_root", true_rho=None, method="bartlett", check=False,
     return rho_est, se, runtime_secs, M_tuple
 
 
-def results_summary(results, group=False):
+def results_summary(results, group=None):
     if not group:
         out = pd.DataFrame(
             {
@@ -552,7 +561,7 @@ def results_summary(results, group=False):
             index=[0],
         )
     else:
-        setting_df = results.drop(
+        setting_method_df = results.drop(
             columns=[
                 "sim_id",
                 "lower",
@@ -566,7 +575,7 @@ def results_summary(results, group=False):
         ).drop_duplicates()
         # out = results.groupby(['setting_id', 'rho', 'nx', 'ny', 'len_scale', 'm_sim', 'method', 'M0', 'M1', 'b_qs', 'M_method'],
         #                       dropna=False).agg({'bias':'mean', 'est': 'std', 'se': 'mean', 'cover': 'mean', 'runtime': 'mean'})
-        out = results.groupby(["setting_id"]).agg(
+        out = results.groupby(group).agg(
             {
                 "bias": "mean",
                 "est": "std",
@@ -584,11 +593,12 @@ def results_summary(results, group=False):
             "runtime_mean",
         ]
         out = out.reset_index()
-        out = pd.merge(setting_df, out, on="setting_id", how="inner")
+        out = pd.merge(setting_method_df, out, on = group, how="inner")
     return out
 
 
 def sim_single(
+    method_df,
     rho,
     m_sim=5,
     nx=50,
@@ -599,10 +609,6 @@ def sim_single(
     seed=None,
     M_trunc=None,
     return_summary=True,
-    use_true_rho=False,
-    method="bartlett",
-    M="cubic_root",
-    b_qs=None,
     gen_method="gstools",
     fwhm=2,
     truncate=4,
@@ -613,8 +619,16 @@ def sim_single(
     -------
     pandas.DataFrame with columns ['sim_id', 'pearson_r'].
     """
+    # reset the index
+    method_df = method_df.reset_index(drop=True)
+
     # if seed = None, rng.integers will genereate a random number
     rng = np.random.default_rng(seed)
+    #turn pandas into array for faster access
+    use_true_rho = method_df["use_true_rho"].values
+    method = method_df["method"].values
+    M = method_df["M"].values
+    b_qs = method_df["b_qs"].values
 
     if n_dim == 1:
         dim = (nx,)
@@ -625,9 +639,6 @@ def sim_single(
     else:
         # use the same side length
         dim = (nx,) * n_dim
-    true_rho = None
-    if use_true_rho:
-        true_rho = rho
 
     # if M_trunc is None:
     #     rho_final = rho
@@ -636,7 +647,7 @@ def sim_single(
 
     results = []
 
-    for i in range(1, m_sim + 1):
+    for i in range(m_sim):
         X, Y = gen_corr_field(
             rho,
             dim,
@@ -651,13 +662,24 @@ def sim_single(
         )
 
         # print('shape of X:', X.shape, 'shape of Y:', Y.shape)
+        for j in method_df.index:
+            true_rho = None
+            if use_true_rho[j]:
+                true_rho = rho
 
-        # Pearson correlation and se
-        est, se, runtime_secs, M_tuple = corr(
-            X, Y, true_rho=true_rho, method=method, M=M, b_qs=b_qs
-        )
-        # python list append is similar to preallocate and then fill, faster than concat a row to a pandas dataframe
-        results.append({"sim_id": i, "est": est, "se": se, "runtime": runtime_secs})
+            # Pearson correlation and se
+            est, se, runtime_secs, M_tuple = corr(
+                X,
+                Y,
+                true_rho=true_rho,
+                method=method[j],
+                M=M[j],
+                b_qs=b_qs[j],
+            )
+            # python list append is similar to preallocate and then fill, faster than concat a row to a pandas dataframe
+            results.append({"sim_id": i, 'method_id': j, "est": est, "se": se, "runtime": runtime_secs,
+                            # M1 = M_tuple[1] is the same as M0
+                            "M0":M_tuple[0]})
 
     results = pd.DataFrame(results)
     results = results.assign(
@@ -668,52 +690,46 @@ def sim_single(
         bias=results["est"] - rho,
         cover=1 * (rho <= results["upper"]) & (rho >= results["lower"]),
     )
+
+
     if return_summary:
-        results = results_summary(results)
-    # M1 = M_tuple[1] is the same as M0
+        results = results_summary(results, group = ['method_id'])
+    
     results = results.assign(
         rho=rho,
         nx=nx,
         n_dim=n_dim,
         len_scale=len_scale,
         m_sim=m_sim,
-        method=method,
-        M0=M_tuple[0],
-        b_qs=b_qs,
-        M_method=str(M),
         gen_method=gen_method,
-        fwhm=fwhm,
+        fwhm=fwhm
     )
+    # join using the index of method_df
+    results = results.join(method_df, on = 'method_id')
+    
     return results
 
 
 def sim_multiple(
-    setting_df,
-    m_sim,
-    return_summary=False,
-    use_true_rho=False,
-    method="bartlett"
-):
+    setting_df, method_df, m_sim, return_summary=False):
     results = []
     for i in setting_df.index:
         print(
             f"----performing simulation, current setting number: {i + 1}, remaining settings: {setting_df.shape[0] - i - 1}----"
         )
         results_single = sim_single(
+            method_df, 
             rho=setting_df["rho"][i],
             m_sim=m_sim,
             nx=setting_df["nx"][i],
             n_dim=setting_df["n_dim"][i],
             len_scale=setting_df["len_scale"][i],
             return_summary=return_summary,
-            use_true_rho=use_true_rho,
-            method=method,
-            M=setting_df["M"][i],
-            b_qs=setting_df["b_qs"][i],
             gen_method=setting_df["gen_method"][i],
-            fwhm=setting_df["fwhm"][i],
+            fwhm=setting_df["fwhm"][i]
         )
-        results_single = results_single.assign(setting_id=i + 1)
+        results_single.insert(0, 'setting_id', i)
+        #results_single = results_single.assign(setting_id=i + 1)
         results.append(results_single)
     results = pd.concat(results, ignore_index=True)
     return results
@@ -872,3 +888,9 @@ def sim_multiple_mean(
         results.append(results_single)
     results = pd.concat(results, ignore_index=True)
     return results
+
+
+# sim_multiple(pd.DataFrame({'nx': [10],'n_dim': [1], 'rho':[0.4], 'len_scale':[None], 
+#                             'fwhm':[1], 'gen_method': ['gaussian_filter']}),
+#     pd.DataFrame({'use_true_rho': [False], 'method': ['bartlett'], 'M': ['auto'], 'b_qs': [None]}),               
+#                               m_sim=2, return_summary = False)

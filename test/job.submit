@@ -10,4 +10,5 @@
 #SBATCH -t 1:00:00
 source ~/.bashrc
 conda activate nilearn
+# working directory is where you run the command 
 python -u sim.py
