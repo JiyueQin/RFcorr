@@ -24,13 +24,11 @@ def gen_field(
 
     Parameters
     ----------
-    nx : int, optional (default=64)
-        Number of grid points in the x-direction.
-    ny : int or None, optional (default=None)
-        Number of grid points in the y-direction. If None, uses the same as `nx`.
+    dim : int or tuple of int, optional (default=(50, 50))
+        Dimensions of the field. If int, creates 1D field. If tuple, creates multi-dimensional field.
     var : float, optional (default=1.0)
         Variance parameter for the Gaussian covariance model.
-    len_scale : float, optional (default=10.0)
+    len_scale : float, optional (default=1)
         Length scale parameter of the Gaussian covariance (larger length scale is smoother).
     seed : int or None, optional (default=None)
         Random seed for reproducibility. If None, uses a random seed.
@@ -139,16 +137,14 @@ def gen_corr_field(
     distribution="gaussian",
 ):
     """
-    Generate a pair of correlated 2D Gaussian random fields with optional truncation.
+    Generate a pair of correlated random fields with optional truncation.
 
     Parameters
     ----------
     rho : float
         Desired pointwise correlation between the two fields (between -1 and 1).
-    nx : int, optional (default=64)
-        Number of grid points in the x-direction.
-    ny : int or None, optional (default=None)
-        Number of grid points in the y-direction. If None, uses the same as `nx`.
+    dim : int or tuple of int, optional (default=(50, 50))
+        Dimensions of the fields. If int, creates 1D fields. If tuple, creates multi-dimensional fields.
     var : float, optional (default=1.0)
         Variance parameter for the Gaussian covariance model.
     len_scale : float, optional (default=10.0)
@@ -157,6 +153,16 @@ def gen_corr_field(
         Random seed for reproducibility. If None, uses a random seed.
     M_trunc : float or None, optional (default=None)
         Truncation threshold. If provided, both fields are clipped to [-M_trunc, M_trunc].
+    return_coordinate : bool, optional (default=False)
+        If True, returns fields and coordinate lists.
+    method : str, optional (default="gstools")
+        Method to generate fields: 'iid', 'gstools', or 'gaussian_filter'.
+    fwhm : float, optional (default=2)
+        Full width at half maximum for Gaussian filter method.
+    truncate : float, optional (default=4)
+        Truncation parameter for Gaussian filter.
+    distribution : str, optional (default="gaussian")
+        Distribution type: 'gaussian', 't', or 'chisq'.
 
     Returns
     -------
@@ -231,20 +237,25 @@ from scipy.signal import correlate2d, correlate
 
 def est_exp_X0Yh(X, Y, return_counts_lags=False):
     """
-    Estimate E[X_0 * Y_h] for all 2-D integer lags h=(hx,hy) on a grid.
+    Estimate E[X_0 * Y_h] for all spatial integer lags h on a grid.
 
     Parameters
     ----------
-    X, Y : (nx, ny) 2D arrays (same shape)
-        Input fields.
+    X, Y : ndarray (same shape)
+        Input fields of any dimensionality.
+    return_counts_lags : bool, optional (default=False)
+        If False, returns only E. If True, returns (S, C, E, lag_ls).
+
     Returns
     -------
-    E : (2*nx-1, 2*ny-1) array
-        Estimated E[X_0 Y_h] at each lag h.
-    counts : (2*nx-1, 2*ny-1) array
-        Number of valid pairs at each lag.
-    lags_x, lags_y : 1D arrays
-        x and y coordinate of the lag
+    E : ndarray
+        Estimated E[X_0 Y_h] at each lag h. Shape is (2*d_i-1 for each dimension).
+    S : ndarray (if return_counts_lags=True)
+        Sum of products at each lag.
+    C : ndarray (if return_counts_lags=True)
+        Number of valid pairs at each lag (edge correction).
+    lag_ls : list of ndarray (if return_counts_lags=True)
+        Lag coordinates for each dimension.
     """
     if X.shape != Y.shape:
         raise ValueError("X and Y must have the same shape")
@@ -273,8 +284,19 @@ def est_exp_X0Yh(X, Y, return_counts_lags=False):
 
 def kernel(x, type="bartlett"):
     """
-    Quadratic Spectral (QS) kernel K_QS(x).
-    Vectorized over x (float or ndarray).
+    Kernel function for lag weighting.
+
+    Parameters
+    ----------
+    x : float or ndarray
+        Input value(s).
+    type : str, optional (default="bartlett")
+        Kernel type: 'bartlett', 'qs' (Quadratic Spectral), or 'constant'.
+
+    Returns
+    -------
+    out : float or ndarray
+        Kernel value(s) at x.
     """
     x = np.asarray(x, dtype=float)
 
@@ -306,8 +328,23 @@ def kernel(x, type="bartlett"):
 
 def kernel_weights(x, type, bandwidth, M=None):
     """
-    QS weights w_k = K_QS(k / b), for k = 0,1,...,max_lag.
-    (QS has infinite support; in practice you truncate at max_lag.)
+    Compute kernel weights for lag weighting.
+
+    Parameters
+    ----------
+    x : ndarray
+        Lag values.
+    type : str
+        Kernel type: 'bartlett', 'qs', or 'constant'.
+    bandwidth : float
+        Bandwidth parameter for the kernel.
+    M : float or None, optional (default=None)
+        Maximum lag cutoff.
+
+    Returns
+    -------
+    weights : ndarray
+        Kernel weights at each lag value.
     """
     mask = np.abs(x) <= M
     if type == "constant":
@@ -446,11 +483,45 @@ def corr(
     Y,
     M="cubic_root",
     true_rho=None,
-    method="bartlett",
+    se_method="hac",
+    kernel="bartlett",
     check=False,
     b_qs=5,
     constant=1,
 ):
+    """
+    Estimate correlation and its standard error for two fields.
+
+    Parameters
+    ----------
+    X, Y : ndarray (same shape)
+        Input fields to correlate.
+    M : str or numeric, optional (default="cubic_root")
+        Lag truncation method: 'cubic_root', 'linear', 'auto', or numeric value.
+    true_rho : float or None, optional (default=None)
+        Known true correlation for plugin estimation.
+    se_method : str, optional (default="hac")
+        Standard error method: 'iid', 'hac', 'hac_gaussian', or 'huristic'.
+    kernel : str, optional (default="bartlett")
+        Kernel type for HAC: 'bartlett', 'qs', or 'constant'.
+    check : bool, optional (default=False)
+        If True, print diagnostic information.
+    b_qs : float, optional (default=5)
+        Bandwidth parameter for QS kernel.
+    constant : float, optional (default=1)
+        Scaling constant for M calculation.
+
+    Returns
+    -------
+    rho_est : float
+        Estimated Pearson correlation.
+    se : float
+        Standard error of the correlation estimate.
+    runtime_secs : float
+        Computation time in seconds.
+    M_tuple : tuple
+        Lag truncation values used.
+    """
     start_time = time.time()
     if X.shape != Y.shape:
         raise ValueError("X and Y must have the same shape")
@@ -460,25 +531,32 @@ def corr(
     rho_est = np.corrcoef(X.ravel(), Y.ravel())[0, 1]
     X_standard = X
     Y_standard = Y
+    # todo: add this
     # X_standard =  (X-X.mean())/X.std()
     # Y_standard =  (Y-Y.mean())/Y.std()
+
     if true_rho is None:
         rho_plugin = rho_est
     else:
         rho_plugin = true_rho
     # print('rho_plugin:', rho_plugin)
-    if method == "iid":
+
+    if se_method == "huristic":
+        rho_plugin = 0
+        kernel = "bartlett"
+
+    if se_method == "iid":
         var = (1 - rho_plugin**2) ** 2 / n
-        M_tuple = None
+        M_tuple = (None,)
     else:
         # --------weight function and truncation lag numbder -----------
         if M == "cubic_root":
-            M_tuple = constant * np.ceil(dim**0.3)
+            M_tuple = np.ceil(dim**0.3 * constant)
         elif M == "linear":
-            M_tuple = constant * np.floor(dim / 5)
+            M_tuple = np.floor(dim / 5 * constant)
             # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
         elif M == "auto":
-            M_tuple = constant * np.ceil(dim ** (n_dim / (n_dim + 2)))
+            M_tuple = np.ceil(dim ** (n_dim / (n_dim + 2)) * constant)
         elif isinstance(M, int):
             M_tuple = (M,)
         elif isinstance(M, tuple) and all(isinstance(x, numbers.Number) for x in M):
@@ -489,7 +567,7 @@ def corr(
         lag_ls = [np.arange(-(dim_i - 1), dim_i) for dim_i in dim]
 
         weights_ls = [
-            kernel_weights(lag_ls[i], type=method, bandwidth=b_qs, M=M_tuple[i])
+            kernel_weights(lag_ls[i], type=kernel, bandwidth=b_qs, M=M_tuple[i])
             for i in range(n_dim)
         ]
         weights = reduce(np.multiply, np.ix_(*weights_ls))
@@ -498,20 +576,43 @@ def corr(
         # print(X_standard.mean())
         # print(X_standard.std())
 
-        X_standard_square = X_standard**2
-        Y_standard_square = Y_standard**2
-        X_standard_Y_standard = X_standard * Y_standard
-        cov_ls = [
-            est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard) - rho_plugin**2,
-            est_exp_X0Yh(X_standard_Y_standard, X_standard_square) - rho_plugin,
-            est_exp_X0Yh(X_standard_Y_standard, Y_standard_square) - rho_plugin,
-            est_exp_X0Yh(X_standard_square, X_standard_Y_standard) - rho_plugin,
-            est_exp_X0Yh(X_standard_square, X_standard_square) - 1,
-            est_exp_X0Yh(X_standard_square, Y_standard_square) - 1,
-            est_exp_X0Yh(Y_standard_square, X_standard_Y_standard) - rho_plugin,
-            est_exp_X0Yh(Y_standard_square, X_standard_square) - 1,
-            est_exp_X0Yh(Y_standard_square, Y_standard_square) - 1,
-        ]
+        if se_method in ["hac_gaussian", "huristic"]:
+            rho_xx_h = est_exp_X0Yh(X_standard, X_standard)
+            rho_yy_h = est_exp_X0Yh(Y_standard, Y_standard)
+            if se_method == "huristic":
+                rho_xy_h = 0
+                rho_yx_h = 0
+            else:
+                rho_xy_h = est_exp_X0Yh(X_standard, Y_standard)
+                rho_yx_h = est_exp_X0Yh(Y_standard, X_standard)
+            # order the matrix by row
+            cov_ls = [
+                rho_xx_h * rho_yy_h + rho_xy_h * rho_yx_h,
+                2 * rho_xx_h * rho_yx_h,
+                2 * rho_yy_h * rho_xy_h,
+                2 * rho_xx_h * rho_xy_h,
+                2 * rho_xx_h * rho_xx_h,
+                2 * rho_xy_h * rho_xy_h,
+                2 * rho_yy_h * rho_yx_h,
+                2 * rho_yx_h * rho_yx_h,
+                2 * rho_yy_h * rho_yy_h,
+            ]
+        else:
+            X_standard_square = X_standard**2
+            Y_standard_square = Y_standard**2
+            X_standard_Y_standard = X_standard * Y_standard
+            cov_ls = [
+                est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard)
+                - rho_plugin**2,
+                est_exp_X0Yh(X_standard_Y_standard, X_standard_square) - rho_plugin,
+                est_exp_X0Yh(X_standard_Y_standard, Y_standard_square) - rho_plugin,
+                est_exp_X0Yh(X_standard_square, X_standard_Y_standard) - rho_plugin,
+                est_exp_X0Yh(X_standard_square, X_standard_square) - 1,
+                est_exp_X0Yh(X_standard_square, Y_standard_square) - 1,
+                est_exp_X0Yh(Y_standard_square, X_standard_Y_standard) - rho_plugin,
+                est_exp_X0Yh(Y_standard_square, X_standard_square) - 1,
+                est_exp_X0Yh(Y_standard_square, Y_standard_square) - 1,
+            ]
 
         omega = np.array([np.sum(weights * cov) for cov in cov_ls]).reshape((3, 3))
         vec = np.array([1, -0.5 * rho_plugin, -0.5 * rho_plugin])
@@ -549,7 +650,22 @@ def corr(
 
 
 def results_summary(results, group=None):
-    if not group:
+    """
+    Summarize simulation results by aggregating across simulations.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        Results DataFrame with columns: bias, est, se, cover, runtime.
+    group : list of str or None, optional (default=None)
+        Columns to group by. If None, returns summary across all rows.
+
+    Returns
+    -------
+    summary : pd.DataFrame
+        Aggregated results with columns: bias_mean, est_sd, se_mean, n_se_na, cover_rate, runtime_mean.
+    """
+    if group is None:
         out = pd.DataFrame(
             {
                 "bias_mean": results["bias"].mean(),
@@ -593,7 +709,7 @@ def results_summary(results, group=None):
             "runtime_mean",
         ]
         out = out.reset_index()
-        out = pd.merge(setting_method_df, out, on = group, how="inner")
+        out = pd.merge(setting_method_df, out, on=group, how="inner")
     return out
 
 
@@ -615,20 +731,60 @@ def sim_single(
     distribution="gaussian",
 ):
     """
+    Run correlation estimation simulations for a single setting.
+
+    Parameters
+    ----------
+    method_df : pd.DataFrame
+        Methods to compare with columns: use_true_rho, method, kernel, M, b_qs, constant.
+    rho : float
+        True correlation coefficient.
+    m_sim : int, optional (default=5)
+        Number of simulations.
+    nx : int, optional (default=50)
+        First dimension size.
+    ny : int or None, optional (default=None)
+        Second dimension size. If None, equals nx.
+    n_dim : int, optional (default=2)
+        Number of dimensions.
+    var : float, optional (default=1.0)
+        Variance of the field.
+    len_scale : float, optional (default=10.0)
+        Length scale of the field.
+    seed : int or None, optional (default=None)
+        Random seed.
+    M_trunc : float or None, optional (default=None)
+        Truncation threshold for field values.
+    return_summary : bool, optional (default=True)
+        If True, returns summarized results by method.
+    gen_method : str, optional (default="gstools")
+        Field generation method.
+    fwhm : float, optional (default=2)
+        Full width at half maximum for Gaussian filter.
+    truncate : float, optional (default=4)
+        Truncation for Gaussian filter.
+    distribution : str, optional (default="gaussian")
+        Distribution type.
+
     Returns
     -------
-    pandas.DataFrame with columns ['sim_id', 'pearson_r'].
+    results : pd.DataFrame
+        Simulation results with columns: sim_id, method_id, est, se, runtime, M0,
+        lower, upper, bias, cover, rho, nx, n_dim, len_scale, m_sim, gen_method, fwhm,
+        and columns from method_df.
     """
     # reset the index
     method_df = method_df.reset_index(drop=True)
 
     # if seed = None, rng.integers will genereate a random number
     rng = np.random.default_rng(seed)
-    #turn pandas into array for faster access
+    # turn pandas into array for faster access
     use_true_rho = method_df["use_true_rho"].values
-    method = method_df["method"].values
+    se_method = method_df["method"].values
+    kernel = method_df["kernel"].values
     M = method_df["M"].values
     b_qs = method_df["b_qs"].values
+    constant = method_df["constant"].values
 
     if n_dim == 1:
         dim = (nx,)
@@ -672,14 +828,24 @@ def sim_single(
                 X,
                 Y,
                 true_rho=true_rho,
-                method=method[j],
+                se_method=se_method[j],
+                kernel=kernel[j],
                 M=M[j],
                 b_qs=b_qs[j],
+                constant=constant[j],
             )
             # python list append is similar to preallocate and then fill, faster than concat a row to a pandas dataframe
-            results.append({"sim_id": i, 'method_id': j, "est": est, "se": se, "runtime": runtime_secs,
-                            # M1 = M_tuple[1] is the same as M0
-                            "M0":M_tuple[0]})
+            results.append(
+                {
+                    "sim_id": i,
+                    "method_id": j,
+                    "est": est,
+                    "se": se,
+                    "runtime": runtime_secs,
+                    # M1 = M_tuple[1] is the same as M0
+                    "M0": M_tuple[0],
+                }
+            )
 
     results = pd.DataFrame(results)
     results = results.assign(
@@ -691,10 +857,9 @@ def sim_single(
         cover=1 * (rho <= results["upper"]) & (rho >= results["lower"]),
     )
 
-
     if return_summary:
-        results = results_summary(results, group = ['method_id'])
-    
+        results = results_summary(results, group=["method_id"])
+
     results = results.assign(
         rho=rho,
         nx=nx,
@@ -702,23 +867,41 @@ def sim_single(
         len_scale=len_scale,
         m_sim=m_sim,
         gen_method=gen_method,
-        fwhm=fwhm
+        fwhm=fwhm,
     )
     # join using the index of method_df
-    results = results.join(method_df, on = 'method_id')
-    
+    results = results.join(method_df, on="method_id")
+
     return results
 
 
-def sim_multiple(
-    setting_df, method_df, m_sim, return_summary=False):
+def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
+    """
+    Run correlation estimation simulations for multiple settings.
+
+    Parameters
+    ----------
+    setting_df : pd.DataFrame
+        Settings to iterate over with columns: rho, nx, n_dim, len_scale, gen_method, fwhm.
+    method_df : pd.DataFrame
+        Methods to compare with columns: use_true_rho, method, kernel, M, b_qs, constant.
+    m_sim : int
+        Number of simulations per setting.
+    return_summary : bool, optional (default=False)
+        If True, returns summarized results.
+
+    Returns
+    -------
+    results : pd.DataFrame
+        Combined results from all settings and methods.
+    """
     results = []
     for i in setting_df.index:
         print(
             f"----performing simulation, current setting number: {i + 1}, remaining settings: {setting_df.shape[0] - i - 1}----"
         )
         results_single = sim_single(
-            method_df, 
+            method_df,
             rho=setting_df["rho"][i],
             m_sim=m_sim,
             nx=setting_df["nx"][i],
@@ -726,10 +909,10 @@ def sim_multiple(
             len_scale=setting_df["len_scale"][i],
             return_summary=return_summary,
             gen_method=setting_df["gen_method"][i],
-            fwhm=setting_df["fwhm"][i]
+            fwhm=setting_df["fwhm"][i],
         )
-        results_single.insert(0, 'setting_id', i)
-        #results_single = results_single.assign(setting_id=i + 1)
+        results_single.insert(0, "setting_id", i)
+        # results_single = results_single.assign(setting_id=i + 1)
         results.append(results_single)
     results = pd.concat(results, ignore_index=True)
     return results
@@ -744,6 +927,37 @@ def mean(
     use_true_mean=False,
     true_mean=None,
 ):
+    """
+    Estimate mean and standard error for autocorrelated 1D data.
+
+    Parameters
+    ----------
+    X : ndarray
+        1D input data.
+    M : str or int, optional (default="cubic_root")
+        Lag truncation method: 'cubic_root', 'linear', or numeric.
+    method : str, optional (default="bartlett")
+        HAC kernel type: 'iid', 'bartlett', 'constant', 'qs', or 'naive'.
+    check : bool, optional (default=False)
+        If True, print diagnostic information.
+    b_qs : float, optional (default=5)
+        Bandwidth parameter for QS kernel.
+    use_true_mean : bool, optional (default=False)
+        If True, use true_mean for calculations.
+    true_mean : float or None, optional (default=None)
+        Known true mean value.
+
+    Returns
+    -------
+    mean_est : float
+        Estimated mean.
+    se : float
+        Standard error of the mean estimate.
+    runtime_secs : float
+        Computation time in seconds.
+    M_int : int
+        Lag truncation value used.
+    """
     start_time = time.time()
     n = len(X)
 
@@ -817,9 +1031,38 @@ def sim_single_mean(
     square=False,
 ):
     """
+    Run mean estimation simulations for a single setting.
+
+    Parameters
+    ----------
+    m_sim : int, optional (default=5)
+        Number of simulations.
+    n : int, optional (default=64)
+        Length of the time series.
+    var : float, optional (default=1.0)
+        Variance of the field.
+    len_scale : float, optional (default=10.0)
+        Length scale of spatial correlation.
+    seed : int or None, optional (default=None)
+        Random seed.
+    return_summary : bool, optional (default=True)
+        If True, returns summarized results.
+    method : str, optional (default="bartlett")
+        HAC kernel type.
+    iid : bool, optional (default=False)
+        If True, generates iid data instead of correlated.
+    M : int or None, optional (default=None)
+        Lag truncation value.
+    b_qs : float or None, optional (default=None)
+        Bandwidth for QS kernel.
+    square : bool, optional (default=False)
+        If True, estimates mean of squared field.
+
     Returns
     -------
-    pandas.DataFrame with columns ['sim_id', 'pearson_r'].
+    results : pd.DataFrame
+        Simulation results with columns: sim_id, est, se, runtime, lower, upper, bias,
+        cover, n, len_scale, m_sim, method, M, b_qs, M_method.
     """
     # if seed = None, rng.integers will genereate a random number
     rng = np.random.default_rng(seed)
@@ -868,6 +1111,29 @@ def sim_single_mean(
 def sim_multiple_mean(
     setting_df, m_sim, return_summary=False, method="bartlett", iid=False, square=False
 ):
+    """
+    Run mean estimation simulations for multiple settings.
+
+    Parameters
+    ----------
+    setting_df : pd.DataFrame
+        Settings to iterate over with columns: nx, len_scale, M, b_qs.
+    m_sim : int
+        Number of simulations per setting.
+    return_summary : bool, optional (default=False)
+        If True, returns summarized results.
+    method : str, optional (default="bartlett")
+        HAC kernel type.
+    iid : bool, optional (default=False)
+        If True, generates iid data.
+    square : bool, optional (default=False)
+        If True, estimates mean of squared field.
+
+    Returns
+    -------
+    results : pd.DataFrame
+        Combined results from all settings.
+    """
     results = []
     for i in setting_df.index:
         print(
@@ -890,7 +1156,8 @@ def sim_multiple_mean(
     return results
 
 
-# sim_multiple(pd.DataFrame({'nx': [10],'n_dim': [1], 'rho':[0.4], 'len_scale':[None], 
+# sim_multiple(pd.DataFrame({'nx': [10],'n_dim': [1], 'rho':[0.4], 'len_scale':[None],
 #                             'fwhm':[1], 'gen_method': ['gaussian_filter']}),
-#     pd.DataFrame({'use_true_rho': [False], 'method': ['bartlett'], 'M': ['auto'], 'b_qs': [None]}),               
+#     pd.DataFrame({'use_true_rho': [False], 'method': ['iid'], 'kernel': ['bartlett'], 'M': ['auto'], 'b_qs': [None],
+#                   'constant': [1]}),
 #                               m_sim=2, return_summary = False)
