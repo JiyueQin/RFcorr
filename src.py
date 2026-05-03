@@ -18,6 +18,7 @@ def gen_field(
     fwhm=2,
     truncate=4,
     distribution="gaussian",
+    noise_df = None,
 ):
     """
     Generate a 0-mean random field with optional truncation.
@@ -80,7 +81,7 @@ def gen_field(
         elif distribution == "t":
             if noise_df is None:
                 noise_df = 3
-                noise_raw = np.random.standard_t(noise_df, dim_larger)
+            noise_raw = np.random.standard_t(noise_df, dim_larger)
             if noise_df > 2:
                 sd_before_smoothing = np.sqrt(noise_df / (noise_df - 2))
             else:
@@ -88,9 +89,9 @@ def gen_field(
         elif distribution == "chisq":
             if noise_df is None:
                 noise_df = 5
-                # center by subtracting the mean
-                noise_raw = np.random.chisquare(noise_df, dim_larger) - noise_df
-                sd_before_smoothing = np.sqrt(2 * noise_df)
+            # center by subtracting the mean
+            noise_raw = np.random.chisquare(noise_df, dim_larger) - noise_df
+            sd_before_smoothing = np.sqrt(2 * noise_df)
         # noise_raw_sd = noise_raw.std(0, ddof=1)
         # print('SD before smoothing across all subjects for each pixel,', 'mean:', noise_raw_sd.mean(), 'max:', noise_raw_sd.max(), 'min:', noise_raw_sd.min())
         # smoothing the noise with gaussian kernel
@@ -135,6 +136,7 @@ def gen_corr_field(
     fwhm=2,
     truncate=4,
     distribution="gaussian",
+    noise_df = None,
 ):
     """
     Generate a pair of correlated random fields with optional truncation.
@@ -203,6 +205,7 @@ def gen_corr_field(
         fwhm=fwhm,
         truncate=truncate,
         distribution=distribution,
+        noise_df = noise_df, 
     )
     V = gen_field(
         dim=dim,
@@ -215,6 +218,7 @@ def gen_corr_field(
         fwhm=fwhm,
         truncate=truncate,
         distribution=distribution,
+        noise_df = noise_df, 
     )
     beta = np.sqrt(max(0.0, 1.0 - rho**2))
     # correlated pair of fields
@@ -361,120 +365,6 @@ def kernel_weights(x, type, bandwidth, M=None):
 
 import time
 import numbers
-
-
-def corr_old(
-    X, Y, M="cubic_root", true_rho=None, method="bartlett", check=False, b_qs=5
-):
-    start_time = time.time()
-    if X.shape != Y.shape:
-        raise ValueError("X and Y must have the same shape")
-    nx, ny = X.shape
-    dim = np.array(X.shape)
-    rho_est = np.corrcoef(X.ravel(), Y.ravel())[0, 1]
-    X_standard = X
-    Y_standard = Y
-    # X_standard =  (X-X.mean())/X.std()
-    # Y_standard =  (Y-Y.mean())/Y.std()
-    if true_rho is None:
-        rho_plugin = rho_est
-    else:
-        rho_plugin = true_rho
-    # print('rho_plugin:', rho_plugin)
-    if method == "iid":
-        var = (1 - rho_plugin**2) ** 2 / n
-    else:
-        # --------weight function and truncation lag numbder -----------
-        if M == "cubic_root":
-            M_tuple = np.ceil(dim**0.3)
-        elif M == "linear":
-            M_tuple = np.floor(dim / 5)
-            # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
-        elif (
-            isinstance(M, tuple) and all(isinstance(x, numbers.Number) for x in M)
-        ) or (isinstance(M, int)):
-            M_tuple = M
-        else:
-            raise ValueError("M must be 'cubic_root', 'linear', or numeric.")
-
-        lags_x = np.arange(-(nx - 1), nx)
-        lags_y = np.arange(-(ny - 1), ny)
-        lags_x_all, lags_y_all = np.meshgrid(lags_x, lags_y)
-        if method == "bartlett":
-            weights = (
-                (np.abs(lags_x_all) <= M_tuple[0])
-                * (np.abs(lags_y_all) <= M_tuple[1])
-                * (1 - np.abs(lags_x_all) / (M_tuple[0] + 1))
-                * (1 - np.abs(lags_y_all) / (1 + M_tuple[1]))
-            )
-        if method == "constant":
-            weights = (np.abs(lags_x_all) <= M_tuple[0]) * (
-                np.abs(lags_y_all) <= M_tuple[1]
-            )
-        if method == "qs":
-            weights = (
-                (np.abs(lags_x_all) <= M_tuple[0])
-                * (np.abs(lags_y_all) <= M_tuple[1])
-                * kernel(np.abs(lags_x_all) / b_qs, type="qs")
-                * kernel(np.abs(lags_y_all) / b_qs, type="qs")
-            )
-        if method == "naive":
-            # known to perform poorly, testing only!!
-            weights = np.ones((len(lags_x), len(lags_y)))
-        print("weights:", weights)
-        # print(weights.shape)
-        # print(X_standard.mean())
-        # print(X_standard.std())
-
-        X_standard_square = X_standard**2
-        Y_standard_square = Y_standard**2
-        X_standard_Y_standard = X_standard * Y_standard
-        cov_ls = [
-            est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard) - rho_plugin**2,
-            est_exp_X0Yh(X_standard_Y_standard, X_standard_square) - rho_plugin,
-            est_exp_X0Yh(X_standard_Y_standard, Y_standard_square) - rho_plugin,
-            est_exp_X0Yh(X_standard_square, X_standard_Y_standard) - rho_plugin,
-            est_exp_X0Yh(X_standard_square, X_standard_square) - 1,
-            est_exp_X0Yh(X_standard_square, Y_standard_square) - 1,
-            est_exp_X0Yh(Y_standard_square, X_standard_Y_standard) - rho_plugin,
-            est_exp_X0Yh(Y_standard_square, X_standard_square) - 1,
-            est_exp_X0Yh(Y_standard_square, Y_standard_square) - 1,
-        ]
-
-        omega = np.array([np.sum(weights.T * cov) for cov in cov_ls]).reshape((3, 3))
-        print("omega", omega)
-        vec = np.array([1, -0.5 * rho_plugin, -0.5 * rho_plugin])
-        var = (vec @ omega @ vec) / (nx * ny)
-        # print(X_standard_Y_standard.shape)
-        # if true_rho == 0:
-        #     T1= T2 = 0
-        # else:
-        #     # () needed for linebreak
-        #     T1 = (est_exp_X0Yh(X_standard_square, X_standard_square) + est_exp_X0Yh(Y_standard_square, Y_standard_square) +
-        #           est_exp_X0Yh(X_standard_square, Y_standard_square) + est_exp_X0Yh(Y_standard_square, X_standard_square))
-        #     T2 = (est_exp_X0Yh(X_standard_square, X_standard_Y_standard) + est_exp_X0Yh(X_standard_Y_standard, X_standard_square) +
-        #           est_exp_X0Yh(X_standard_Y_standard, Y_standard_square) + est_exp_X0Yh(Y_standard_square, X_standard_Y_standard))
-        # T3 = est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard)
-        # print(T1,T2,T3)
-        # print(np.sqrt(np.sum(T3)/(nx*ny)))
-
-        # h  = weights*(1/4*(rho_est**2)*T1 -1/2*rho_est*T2 +T3)
-        # if check:
-        #    print('T1:', T1, '\nT2', T2, '\nT3', T3)
-        # print(h)
-        # print(h.shape)
-        # print(np.max(h))
-        # var = np.sum(h)/(nx*ny)
-    # print(var)
-    if var < 0:
-        warnings.warn("Estimated variance is negative. Check!")
-        se = np.nan
-    else:
-        se = np.sqrt(var)
-    runtime_secs = time.time() - start_time
-    return rho_est, se, runtime_secs, M_tuple
-
-
 from functools import reduce
 
 
@@ -488,6 +378,7 @@ def corr(
     check=False,
     b_qs=5,
     constant=1,
+    standardize = True,
 ):
     """
     Estimate correlation and its standard error for two fields.
@@ -526,21 +417,65 @@ def corr(
     if X.shape != Y.shape:
         raise ValueError("X and Y must have the same shape")
     dim = np.array(X.shape)
-    n = np.prod(dim)
-    n_dim = len(dim)
     rho_est = np.corrcoef(X.ravel(), Y.ravel())[0, 1]
-    X_standard = X
-    Y_standard = Y
-    # todo: add this
-    # X_standard =  (X-X.mean())/X.std()
-    # Y_standard =  (Y-Y.mean())/Y.std()
+    if standardize: 
+        X_standard =  (X-X.mean())/X.std()
+        Y_standard =  (Y-Y.mean())/Y.std()
+    else:
+        X_standard = X
+        Y_standard = Y
 
     if true_rho is None:
         rho_plugin = rho_est
     else:
         rho_plugin = true_rho
     # print('rho_plugin:', rho_plugin)
+    est_exp_ls = get_est_exp_ls(se_method, X_standard, Y_standard)
 
+    se, M_tuple = get_se(
+        dim, 
+        est_exp_ls,
+        rho_plugin,
+        M,
+        se_method,
+        kernel,
+        check,
+        b_qs,
+        constant,)
+    
+    
+    se_under_null, _ = get_se(
+        dim,
+        est_exp_ls,
+        0,
+        M,
+        se_method,
+        kernel,
+        check,
+        b_qs,
+        constant,)
+    
+
+    runtime_secs = time.time() - start_time
+    return rho_est, se, se_under_null,  runtime_secs, M_tuple
+
+
+from scipy.stats import norm
+
+
+def get_se(
+    dim,
+    est_exp_ls,
+    rho_plugin,
+    M="cubic_root",
+    se_method="hac",
+    kernel="bartlett",
+    check=False,
+    b_qs=5,
+    constant=1,
+):
+    n = np.prod(dim)
+    n_dim = len(dim)
     if se_method == "huristic":
         rho_plugin = 0
         kernel = "bartlett"
@@ -577,42 +512,20 @@ def corr(
         # print(X_standard.std())
 
         if se_method in ["hac_gaussian", "huristic"]:
-            rho_xx_h = est_exp_X0Yh(X_standard, X_standard)
-            rho_yy_h = est_exp_X0Yh(Y_standard, Y_standard)
-            if se_method == "huristic":
-                rho_xy_h = 0
-                rho_yx_h = 0
-            else:
-                rho_xy_h = est_exp_X0Yh(X_standard, Y_standard)
-                rho_yx_h = est_exp_X0Yh(Y_standard, X_standard)
-            # order the matrix by row
-            cov_ls = [
-                rho_xx_h * rho_yy_h + rho_xy_h * rho_yx_h,
-                2 * rho_xx_h * rho_yx_h,
-                2 * rho_yy_h * rho_xy_h,
-                2 * rho_xx_h * rho_xy_h,
-                2 * rho_xx_h * rho_xx_h,
-                2 * rho_xy_h * rho_xy_h,
-                2 * rho_yy_h * rho_yx_h,
-                2 * rho_yx_h * rho_yx_h,
-                2 * rho_yy_h * rho_yy_h,
-            ]
+            cov_ls = est_exp_ls
         else:
-            X_standard_square = X_standard**2
-            Y_standard_square = Y_standard**2
-            X_standard_Y_standard = X_standard * Y_standard
-            cov_ls = [
-                est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard)
-                - rho_plugin**2,
-                est_exp_X0Yh(X_standard_Y_standard, X_standard_square) - rho_plugin,
-                est_exp_X0Yh(X_standard_Y_standard, Y_standard_square) - rho_plugin,
-                est_exp_X0Yh(X_standard_square, X_standard_Y_standard) - rho_plugin,
-                est_exp_X0Yh(X_standard_square, X_standard_square) - 1,
-                est_exp_X0Yh(X_standard_square, Y_standard_square) - 1,
-                est_exp_X0Yh(Y_standard_square, X_standard_Y_standard) - rho_plugin,
-                est_exp_X0Yh(Y_standard_square, X_standard_square) - 1,
-                est_exp_X0Yh(Y_standard_square, Y_standard_square) - 1,
+            offsets = [
+                rho_plugin**2,
+                rho_plugin,
+                rho_plugin,
+                rho_plugin,
+                1,
+                1,
+                rho_plugin,
+                1,
+                1,
             ]
+            cov_ls = [e - o for e, o in zip(est_exp_ls, offsets)]
 
         omega = np.array([np.sum(weights * cov) for cov in cov_ls]).reshape((3, 3))
         vec = np.array([1, -0.5 * rho_plugin, -0.5 * rho_plugin])
@@ -645,9 +558,128 @@ def corr(
         se = np.nan
     else:
         se = np.sqrt(var)
-    runtime_secs = time.time() - start_time
-    return rho_est, se, runtime_secs, M_tuple
+    return se, M_tuple
 
+
+
+def get_est_exp_ls(se_method, X_standard, Y_standard):
+    if se_method in ["hac_gaussian", "huristic"]:
+        rho_xx_h = est_exp_X0Yh(X_standard, X_standard)
+        rho_yy_h = est_exp_X0Yh(Y_standard, Y_standard)
+        if se_method == "huristic":
+            rho_xy_h = 0
+            rho_yx_h = 0
+        else:
+            rho_xy_h = est_exp_X0Yh(X_standard, Y_standard)
+            rho_yx_h = est_exp_X0Yh(Y_standard, X_standard)
+        # order the matrix by row
+        est_exp_ls = [
+            rho_xx_h * rho_yy_h + rho_xy_h * rho_yx_h,
+            2 * rho_xx_h * rho_yx_h,
+            2 * rho_yy_h * rho_xy_h,
+            2 * rho_xx_h * rho_xy_h,
+            2 * rho_xx_h * rho_xx_h,
+            2 * rho_xy_h * rho_xy_h,
+            2 * rho_yy_h * rho_yx_h,
+            2 * rho_yx_h * rho_yx_h,
+            2 * rho_yy_h * rho_yy_h,
+        ]
+    else:
+        X_standard_square = X_standard**2
+        Y_standard_square = Y_standard**2
+        X_standard_Y_standard = X_standard * Y_standard
+        est_exp_ls = [
+            est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard),
+            est_exp_X0Yh(X_standard_Y_standard, X_standard_square),
+            est_exp_X0Yh(X_standard_Y_standard, Y_standard_square),
+            est_exp_X0Yh(X_standard_square, X_standard_Y_standard),
+            est_exp_X0Yh(X_standard_square, X_standard_square),
+            est_exp_X0Yh(X_standard_square, Y_standard_square),
+            est_exp_X0Yh(Y_standard_square, X_standard_Y_standard),
+            est_exp_X0Yh(Y_standard_square, X_standard_square),
+            est_exp_X0Yh(Y_standard_square, Y_standard_square),
+        ]
+    return est_exp_ls
+
+
+def confidence_interval(rho_est, se, alpha=0.05, fisher_trans=True):
+    """
+    Compute a confidence interval for a correlation estimate.
+
+    Parameters
+    ----------
+    rho_est : float or array-like
+        Estimated Pearson correlation(s).
+    se : float or array-like
+        Standard error(s) of `rho_est` on the original (untransformed) scale.
+    alpha : float, optional (default=0.05)
+        Significance level; the returned interval has coverage 1 - alpha.
+    fisher_trans : bool, optional (default=True)
+        If True, build the interval on the Fisher z scale (z = arctanh(rho))
+        and back-transform via tanh. The SE on the z scale is se / (1 - rho_est**2).
+        If False, return the symmetric Wald interval rho_est +/- z * se,
+        clipped to [-1, 1].
+
+    Returns
+    -------
+    lower, upper : float or ndarray
+        Lower and upper bounds of the (1 - alpha) confidence interval.
+    """
+    rho_est = np.asarray(rho_est, dtype=float)
+    se = np.asarray(se, dtype=float)
+    z_crit = norm.ppf(1 - alpha / 2)
+
+    if fisher_trans:
+        F = np.arctanh(rho_est)
+        se_F = se / (1 - rho_est**2)
+        lower = np.tanh(F - z_crit * se_F)
+        upper = np.tanh(F + z_crit * se_F)
+    else:
+        lower = np.clip(rho_est - z_crit * se, -1, 1)
+        upper = np.clip(rho_est + z_crit * se, -1, 1)
+
+    if lower.ndim == 0:
+        return float(lower), float(upper)
+    return lower, upper
+
+def pvalue(rho_est, se_under_null, fisher_trans=True):
+    """
+    Two-sided p-value for testing H0: rho = 0.
+
+    Parameters
+    ----------
+    rho_est : float or array-like
+        Estimated Pearson correlation(s).
+    se_under_null : float or array-like
+        Standard error(s) of `rho_est` computed under the null (rho = 0),
+        on the original (untransformed) scale.
+    fisher_trans : bool, optional (default=True)
+        If True, build the test statistic on the Fisher z scale
+        (F = arctanh(rho_est)) with SE on that scale equal to
+        se_under_null / (1 - rho_est**2). If False, use the plain Wald
+        statistic Z = rho_est / se_under_null.
+
+    Returns
+    -------
+    p : float or ndarray
+        Two-sided p-value(s): 2 * (1 - Phi(|Z|)).
+    """
+    rho_est = np.asarray(rho_est, dtype=float)
+    se_under_null = np.asarray(se_under_null, dtype=float)
+
+    if fisher_trans:
+        F = np.arctanh(rho_est)
+        # 1 - rho_est**2 = 0 under null
+        F_se_under_null = se_under_null 
+        Z = F / F_se_under_null
+    else:
+        Z = rho_est / se_under_null
+
+    p = 2 * (1 - norm.cdf(np.abs(Z)))
+
+    if p.ndim == 0:
+        return float(p)
+    return p
 
 def results_summary(results, group=None):
     """
@@ -672,6 +704,9 @@ def results_summary(results, group=None):
                 "est_sd": results["est"].std(),
                 "se_mean": results["se"].mean(),
                 "cover_rate": results["cover"].mean(),
+                "cover_rate_raw": results["cover_raw"].mean(),
+                "power": results["reject"].mean(),
+                "power_raw": results["reject_raw"].mean(),
                 "runtime_mean": results["runtime"].mean(),
             },
             index=[0],
@@ -682,10 +717,18 @@ def results_summary(results, group=None):
                 "sim_id",
                 "lower",
                 "upper",
+                "lower_raw",
+                "upper_raw",
+                "reject",
+                "reject_raw",
+                "p",
+                "p_raw",
                 "bias",
                 "est",
                 "se",
+                "se_under_null",
                 "cover",
+                "cover_raw",
                 "runtime",
             ]
         ).drop_duplicates()
@@ -697,6 +740,9 @@ def results_summary(results, group=None):
                 "est": "std",
                 "se": ["mean", lambda x: x.isna().sum()],
                 "cover": "mean",
+                "cover_raw": "mean",
+                "reject": "mean",
+                "reject_raw": "mean",
                 "runtime": "mean",
             }
         )
@@ -706,6 +752,9 @@ def results_summary(results, group=None):
             "se_mean",
             "n_se_na",
             "cover_rate",
+            "cover_rate_raw",
+            "power",
+            "power_raw",
             "runtime_mean",
         ]
         out = out.reset_index()
@@ -729,6 +778,7 @@ def sim_single(
     fwhm=2,
     truncate=4,
     distribution="gaussian",
+    noise_df = None, 
 ):
     """
     Run correlation estimation simulations for a single setting.
@@ -815,6 +865,7 @@ def sim_single(
             fwhm=fwhm,
             truncate=truncate,
             distribution=distribution,
+            noise_df = noise_df, 
         )
 
         # print('shape of X:', X.shape, 'shape of Y:', Y.shape)
@@ -824,7 +875,7 @@ def sim_single(
                 true_rho = rho
 
             # Pearson correlation and se
-            est, se, runtime_secs, M_tuple = corr(
+            est, se, se_under_null, runtime_secs, M_tuple = corr(
                 X,
                 Y,
                 true_rho=true_rho,
@@ -841,6 +892,7 @@ def sim_single(
                     "method_id": j,
                     "est": est,
                     "se": se,
+                    "se_under_null": se_under_null, 
                     "runtime": runtime_secs,
                     # M1 = M_tuple[1] is the same as M0
                     "M0": M_tuple[0],
@@ -848,13 +900,28 @@ def sim_single(
             )
 
     results = pd.DataFrame(results)
+    lower, upper = confidence_interval(
+        results["est"], results["se"], fisher_trans=True
+    )
+    lower_raw, upper_raw = confidence_interval(
+        results["est"], results["se"], fisher_trans=False
+    )
+    p = pvalue(results["est"], results["se_under_null"], fisher_trans=True)
+    p_raw  = pvalue(results["est"], results["se_under_null"], fisher_trans=False)
     results = results.assign(
-        lower=results["est"] - 1.96 * results["se"],
-        upper=results["est"] + 1.96 * results["se"],
+        lower=lower,
+        upper=upper,
+        lower_raw=lower_raw,
+        upper_raw=upper_raw,
+        p = p, 
+        p_raw = p_raw
     )
     results = results.assign(
         bias=results["est"] - rho,
         cover=1 * (rho <= results["upper"]) & (rho >= results["lower"]),
+        cover_raw = 1 * (rho <= results["upper_raw"]) & (rho >= results["lower_raw"]),
+        reject = 1*(p<0.05),
+        reject_raw = 1*(p_raw<0.05)
     )
 
     if return_summary:
@@ -868,6 +935,8 @@ def sim_single(
         m_sim=m_sim,
         gen_method=gen_method,
         fwhm=fwhm,
+        distribution = distribution,
+        noise_df = noise_df,
     )
     # join using the index of method_df
     results = results.join(method_df, on="method_id")
@@ -910,6 +979,8 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
             return_summary=return_summary,
             gen_method=setting_df["gen_method"][i],
             fwhm=setting_df["fwhm"][i],
+            distribution = setting_df["distribution"][i],
+            noise_df = setting_df["noise_df"][i]
         )
         results_single.insert(0, "setting_id", i)
         # results_single = results_single.assign(setting_id=i + 1)
