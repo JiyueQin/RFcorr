@@ -1,6 +1,6 @@
 import numpy as np
 
-# import gstools as gs
+import gstools as gs
 import pandas as pd
 import warnings
 from scipy.ndimage import gaussian_filter
@@ -19,6 +19,7 @@ def gen_field(
     truncate=4,
     distribution="gaussian",
     noise_df = None,
+    trans = None
 ):
     """
     Generate a 0-mean random field with optional truncation.
@@ -118,6 +119,9 @@ def gen_field(
     # optional: correlated pair of truncated fields
     if M_trunc is not None:
         X = np.clip(X, -M_trunc, M_trunc)
+    
+    if trans == 'square':
+        X = X**2 
     if return_coordinate:
         return (X, coordinate_ls)
     else:
@@ -132,11 +136,13 @@ def gen_corr_field(
     seed=None,
     M_trunc=None,
     return_coordinate=False,
-    method="gstools",
-    fwhm=2,
+    method="gaussian_filter",
+    fwhm=4,
     truncate=4,
     distribution="gaussian",
     noise_df = None,
+    fwhm_ratio = 1,
+    trans = None
 ):
     """
     Generate a pair of correlated random fields with optional truncation.
@@ -206,6 +212,7 @@ def gen_corr_field(
         truncate=truncate,
         distribution=distribution,
         noise_df = noise_df, 
+        trans = trans 
     )
     V = gen_field(
         dim=dim,
@@ -215,10 +222,11 @@ def gen_corr_field(
         M_trunc=None,
         return_coordinate=False,
         method=method,
-        fwhm=fwhm,
+        fwhm=fwhm/fwhm_ratio,
         truncate=truncate,
         distribution=distribution,
         noise_df = noise_df, 
+        trans = trans
     )
     beta = np.sqrt(max(0.0, 1.0 - rho**2))
     # correlated pair of fields
@@ -477,6 +485,8 @@ def get_se(
     n = np.prod(dim)
     n_dim = len(dim)
     if se_method == "huristic":
+        # pre-compute the factor before setting rho_plugin to be 0
+        factor = (1 - rho_plugin**2) ** 2 
         rho_plugin = 0
         kernel = "bartlett"
 
@@ -530,6 +540,8 @@ def get_se(
         omega = np.array([np.sum(weights * cov) for cov in cov_ls]).reshape((3, 3))
         vec = np.array([1, -0.5 * rho_plugin, -0.5 * rho_plugin])
         var = (vec @ omega @ vec) / n
+        if se_method == "huristic":
+            var = factor * var
         # print(X_standard_Y_standard.shape)
         # if true_rho == 0:
         #     T1= T2 = 0
@@ -779,6 +791,7 @@ def sim_single(
     truncate=4,
     distribution="gaussian",
     noise_df = None, 
+    trans = None
 ):
     """
     Run correlation estimation simulations for a single setting.
@@ -866,6 +879,7 @@ def sim_single(
             truncate=truncate,
             distribution=distribution,
             noise_df = noise_df, 
+            trans = trans 
         )
 
         # print('shape of X:', X.shape, 'shape of Y:', Y.shape)
@@ -937,6 +951,7 @@ def sim_single(
         fwhm=fwhm,
         distribution = distribution,
         noise_df = noise_df,
+        trans = trans 
     )
     # join using the index of method_df
     results = results.join(method_df, on="method_id")
@@ -980,7 +995,8 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
             gen_method=setting_df["gen_method"][i],
             fwhm=setting_df["fwhm"][i],
             distribution = setting_df["distribution"][i],
-            noise_df = setting_df["noise_df"][i]
+            noise_df = setting_df["noise_df"][i],
+            trans = setting_df["trans"][i] 
         )
         results_single.insert(0, "setting_id", i)
         # results_single = results_single.assign(setting_id=i + 1)
