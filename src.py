@@ -29,23 +29,47 @@ def gen_field(
     dim : int or tuple of int, optional (default=(50, 50))
         Dimensions of the field. If int, creates 1D field. If tuple, creates multi-dimensional field.
     var : float, optional (default=1.0)
-        Variance parameter for the Gaussian covariance model.
+        Target variance of the field.
     len_scale : float, optional (default=1)
         Length scale parameter of the Gaussian covariance (larger length scale is smoother).
+        Only used when ``method='gstools'``.
     seed : int or None, optional (default=None)
         Random seed for reproducibility. If None, uses a random seed.
     M_trunc : float or None, optional (default=None)
-        Truncation threshold. If provided, both fields are clipped to [-M_trunc, M_trunc].
+        Truncation threshold. If provided, the field is clipped to [-M_trunc, M_trunc].
+    return_coordinate : bool, optional (default=False)
+        If True, also returns the per-dimension coordinate lists.
+    method : str, optional (default="gstools")
+        Method to generate the field: 'iid', 'gstools', or 'gaussian_filter'.
+    fwhm : float, optional (default=2)
+        Full width at half maximum of the Gaussian smoothing kernel.
+        Only used when ``method='gaussian_filter'``.
+    truncate : float, optional (default=4)
+        Truncation parameter (in standard deviations) for the Gaussian filter.
+        Only used when ``method='gaussian_filter'``.
+    distribution : str, optional (default="gaussian")
+        Distribution of the raw noise before smoothing: 'gaussian', 't', or 'chisq'.
+        Only used when ``method='gaussian_filter'``.
+    noise_df : int or None, optional (default=None)
+        Degrees of freedom for the 't' (must be >2, default 3) or 'chisq' (default 5)
+        noise distribution. Ignored for the Gaussian distribution.
+    trans : str or None, optional (default=None)
+        Optional pointwise transformation applied to the field. If 'square',
+        the field is squared.
+
     Returns
     -------
     X : ndarray
-        A 2D NumPy arrays of shape (nx, ny), representing correlated Gaussian fields.
-        If `M_trunc` is not None, the arrays are truncated at ±M_trunc.
+        Random field of shape `dim`. If `M_trunc` is not None, values are clipped at ±M_trunc.
+    coordinate_ls : list of ndarray
+        Per-dimension coordinate arrays (centered at 0). Only returned if
+        `return_coordinate=True`.
 
     Examples
     --------
-    >>> X = gen_field(rho=0.7, nx=50, len_scale=5.0, seed=42, M_trunc=2.0)
+    >>> X = gen_field(dim=(50, 50), len_scale=5.0, seed=42, M_trunc=2.0)
     >>> X.shape
+    (50, 50)
     """
     # structured grid with origin at the center
     # if ny is None:
@@ -64,7 +88,7 @@ def gen_field(
     rng = np.random.default_rng(seed)
 
     if method == "iid":
-        X = np.random.normal(loc=0, scale=np.sqrt(var), size=dim)
+        X = rng.normal(loc=0, scale=np.sqrt(var), size=dim)
     elif method == "gstools":
         model = gs.Gaussian(dim=n_dim, var=var, len_scale=len_scale)
         srf = gs.SRF(model)
@@ -77,12 +101,12 @@ def gen_field(
         padding = round(truncate * sigma)
         dim_larger = [dim_i + 2 * padding for dim_i in dim]
         if distribution == "gaussian":
-            noise_raw = np.random.randn(*dim_larger)
+            noise_raw = rng.standard_normal(dim_larger)
             sd_before_smoothing = 1
         elif distribution == "t":
             if noise_df is None:
                 noise_df = 3
-            noise_raw = np.random.standard_t(noise_df, dim_larger)
+            noise_raw = rng.standard_t(noise_df, dim_larger)
             if noise_df > 2:
                 sd_before_smoothing = np.sqrt(noise_df / (noise_df - 2))
             else:
@@ -91,7 +115,7 @@ def gen_field(
             if noise_df is None:
                 noise_df = 5
             # center by subtracting the mean
-            noise_raw = np.random.chisquare(noise_df, dim_larger) - noise_df
+            noise_raw = rng.chisquare(noise_df, dim_larger) - noise_df
             sd_before_smoothing = np.sqrt(2 * noise_df)
         # noise_raw_sd = noise_raw.std(0, ddof=1)
         # print('SD before smoothing across all subjects for each pixel,', 'mean:', noise_raw_sd.mean(), 'max:', noise_raw_sd.max(), 'min:', noise_raw_sd.min())
@@ -154,7 +178,7 @@ def gen_corr_field(
     dim : int or tuple of int, optional (default=(50, 50))
         Dimensions of the fields. If int, creates 1D fields. If tuple, creates multi-dimensional fields.
     var : float, optional (default=1.0)
-        Variance parameter for the Gaussian covariance model.
+        Target variance of each field.
     len_scale : float, optional (default=10.0)
         Length scale parameter of the Gaussian covariance (larger length scale is smoother).
     seed : int or None, optional (default=None)
@@ -163,24 +187,33 @@ def gen_corr_field(
         Truncation threshold. If provided, both fields are clipped to [-M_trunc, M_trunc].
     return_coordinate : bool, optional (default=False)
         If True, returns fields and coordinate lists.
-    method : str, optional (default="gstools")
+    method : str, optional (default="gaussian_filter")
         Method to generate fields: 'iid', 'gstools', or 'gaussian_filter'.
-    fwhm : float, optional (default=2)
-        Full width at half maximum for Gaussian filter method.
+    fwhm : float, optional (default=4)
+        Full width at half maximum for the Gaussian filter method.
     truncate : float, optional (default=4)
         Truncation parameter for Gaussian filter.
     distribution : str, optional (default="gaussian")
         Distribution type: 'gaussian', 't', or 'chisq'.
+    noise_df : int or None, optional (default=None)
+        Degrees of freedom for the 't' or 'chisq' noise distribution.
+    fwhm_ratio : float, optional (default=1)
+        Ratio of the two fields' smoothing: the second field V is generated with
+        ``fwhm / fwhm_ratio``, allowing X and Y to have different smoothness.
+    trans : str or None, optional (default=None)
+        Optional pointwise transformation applied to each field (e.g. 'square').
 
     Returns
     -------
     X, Y : ndarray
-        Two 2D NumPy arrays of shape (nx, ny), representing correlated Gaussian fields.
-        If `M_trunc` is not None, the arrays are truncated at ±M_trunc.
+        Two correlated random fields of shape `dim`.
+        If `M_trunc` is not None, the arrays are clipped at ±M_trunc.
+    coordinate_ls : list of ndarray
+        Per-dimension coordinate arrays. Only returned if `return_coordinate=True`.
 
     Examples
     --------
-    >>> X, Y = gen_field(rho=0.7, nx=50, len_scale=5.0, seed=42, M_trunc=2.0)
+    >>> X, Y = gen_corr_field(rho=0.7, dim=(50, 50), len_scale=5.0, seed=42)
     >>> X.shape, Y.shape
     ((50, 50), (50, 50))
     """
@@ -236,7 +269,7 @@ def gen_corr_field(
     # optional: correlated pair of truncated fields
     if M_trunc is not None:
         X = np.clip(X, -M_trunc, M_trunc)
-        Y = np.clip(X, -M_trunc, M_trunc)
+        Y = np.clip(Y, -M_trunc, M_trunc)
     if return_coordinate:
         return (X, Y, coordinate_ls)
     else:
@@ -409,13 +442,18 @@ def corr(
         Bandwidth parameter for QS kernel.
     constant : float, optional (default=1)
         Scaling constant for M calculation.
+    standardize : bool, optional (default=True)
+        If True, standardize X and Y (subtract mean, divide by std) before
+        computing the standard error.
 
     Returns
     -------
     rho_est : float
         Estimated Pearson correlation.
     se : float
-        Standard error of the correlation estimate.
+        Standard error of the correlation estimate (at the plugin rho).
+    se_under_null : float
+        Standard error computed under the null hypothesis rho = 0.
     runtime_secs : float
         Computation time in seconds.
     M_tuple : tuple
@@ -482,6 +520,38 @@ def get_se(
     b_qs=5,
     constant=1,
 ):
+    """
+    Compute the HAC standard error of the correlation estimate.
+
+    Parameters
+    ----------
+    dim : ndarray
+        Shape of the field (per-dimension sizes).
+    est_exp_ls : list of ndarray
+        Lag-wise expectation estimates produced by `get_est_exp_ls`.
+    rho_plugin : float
+        Plugin correlation used in the variance formula (use 0 for the null SE).
+    M : str or numeric, optional (default="cubic_root")
+        Lag truncation method: 'cubic_root', 'linear', 'auto', an int, or a tuple of numerics.
+    se_method : str, optional (default="hac")
+        Standard error method: 'iid', 'hac', 'hac_gaussian', or 'huristic'.
+    kernel : str, optional (default="bartlett")
+        Kernel type for HAC weighting: 'bartlett', 'qs', or 'constant'.
+    check : bool, optional (default=False)
+        If True, print diagnostic information (omega and weights).
+    b_qs : float, optional (default=5)
+        Bandwidth parameter for the QS kernel.
+    constant : float, optional (default=1)
+        Scaling constant for the M calculation.
+
+    Returns
+    -------
+    se : float
+        Standard error of the correlation estimate (np.nan if the estimated
+        variance is negative).
+    M_tuple : tuple
+        Lag truncation values used.
+    """
     n = np.prod(dim)
     n_dim = len(dim)
     if se_method == "huristic":
@@ -575,6 +645,23 @@ def get_se(
 
 
 def get_est_exp_ls(se_method, X_standard, Y_standard):
+    """
+    Compute the lag-wise expectation estimates entering the HAC variance.
+
+    Parameters
+    ----------
+    se_method : str
+        Standard error method: 'iid', 'hac', 'hac_gaussian', or 'huristic'.
+        Determines which set of cross-product expectations is computed.
+    X_standard, Y_standard : ndarray (same shape)
+        The (optionally standardized) input fields.
+
+    Returns
+    -------
+    est_exp_ls : list of ndarray
+        List of 9 lag-wise expectation arrays, ordered to fill the 3x3 omega
+        matrix by row in `get_se`.
+    """
     if se_method in ["hac_gaussian", "huristic"]:
         rho_xx_h = est_exp_X0Yh(X_standard, X_standard)
         rho_yy_h = est_exp_X0Yh(Y_standard, Y_standard)
@@ -700,14 +787,18 @@ def results_summary(results, group=None):
     Parameters
     ----------
     results : pd.DataFrame
-        Results DataFrame with columns: bias, est, se, cover, runtime.
+        Results DataFrame with columns: bias, est, se, cover, cover_raw,
+        reject, reject_raw, runtime (and, when grouping, the per-method/setting
+        identifier columns).
     group : list of str or None, optional (default=None)
-        Columns to group by. If None, returns summary across all rows.
+        Columns to group by. If None, returns a single-row summary across all rows.
 
     Returns
     -------
     summary : pd.DataFrame
-        Aggregated results with columns: bias_mean, est_sd, se_mean, n_se_na, cover_rate, runtime_mean.
+        Aggregated results with columns: bias_mean, est_sd, se_mean, cover_rate,
+        cover_rate_raw, power, power_raw, runtime_mean. When `group` is provided,
+        also includes n_se_na (count of NaN SEs) and the grouping columns.
     """
     if group is None:
         out = pd.DataFrame(
@@ -828,13 +919,21 @@ def sim_single(
         Truncation for Gaussian filter.
     distribution : str, optional (default="gaussian")
         Distribution type.
+    noise_df : int or None, optional (default=None)
+        Degrees of freedom for the 't' or 'chisq' noise distribution.
+    trans : str or None, optional (default=None)
+        Optional pointwise transformation applied to the fields (e.g. 'square').
 
     Returns
     -------
     results : pd.DataFrame
-        Simulation results with columns: sim_id, method_id, est, se, runtime, M0,
-        lower, upper, bias, cover, rho, nx, n_dim, len_scale, m_sim, gen_method, fwhm,
-        and columns from method_df.
+        Simulation results. When `return_summary=False`, columns include: sim_id,
+        method_id, est, se, se_under_null, runtime, M0, lower, upper, lower_raw,
+        upper_raw, p, p_raw, bias, cover, cover_raw, reject, reject_raw, plus the
+        setting columns (rho, nx, n_dim, len_scale, m_sim, gen_method, fwhm,
+        distribution, noise_df, trans) and the columns from method_df.
+        When `return_summary=True`, returns the per-method summary from
+        `results_summary` joined with these setting/method columns.
     """
     # reset the index
     method_df = method_df.reset_index(drop=True)
@@ -966,7 +1065,8 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
     Parameters
     ----------
     setting_df : pd.DataFrame
-        Settings to iterate over with columns: rho, nx, n_dim, len_scale, gen_method, fwhm.
+        Settings to iterate over with columns: rho, nx, n_dim, len_scale,
+        gen_method, fwhm, distribution, noise_df, trans.
     method_df : pd.DataFrame
         Methods to compare with columns: use_true_rho, method, kernel, M, b_qs, constant.
     m_sim : int
@@ -977,7 +1077,8 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
     Returns
     -------
     results : pd.DataFrame
-        Combined results from all settings and methods.
+        Combined results from all settings and methods, with a leading
+        `setting_id` column.
     """
     results = []
     for i in setting_df.index:
@@ -1005,242 +1106,242 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
     return results
 
 
-def mean(
-    X,
-    M="cubic_root",
-    method="bartlett",
-    check=False,
-    b_qs=5,
-    use_true_mean=False,
-    true_mean=None,
-):
-    """
-    Estimate mean and standard error for autocorrelated 1D data.
-
-    Parameters
-    ----------
-    X : ndarray
-        1D input data.
-    M : str or int, optional (default="cubic_root")
-        Lag truncation method: 'cubic_root', 'linear', or numeric.
-    method : str, optional (default="bartlett")
-        HAC kernel type: 'iid', 'bartlett', 'constant', 'qs', or 'naive'.
-    check : bool, optional (default=False)
-        If True, print diagnostic information.
-    b_qs : float, optional (default=5)
-        Bandwidth parameter for QS kernel.
-    use_true_mean : bool, optional (default=False)
-        If True, use true_mean for calculations.
-    true_mean : float or None, optional (default=None)
-        Known true mean value.
-
-    Returns
-    -------
-    mean_est : float
-        Estimated mean.
-    se : float
-        Standard error of the mean estimate.
-    runtime_secs : float
-        Computation time in seconds.
-    M_int : int
-        Lag truncation value used.
-    """
-    start_time = time.time()
-    n = len(X)
-
-    mean_est = X.mean()
-    sd = X.std()
-    if use_true_mean:
-        mean_plugin = true_mean
-    else:
-        mean_plugin = mean_est
-    if method == "iid":
-        var = sd**2 / n
-    else:
-        # --------weight function and truncation lag numbder -----------
-        if M == "cubic_root":
-            M_int = np.ceil(n**0.33)
-        elif M == "linear":
-            M_int = np.floor(n / 5)
-            # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
-        elif isinstance(M, int):
-            M_int = M
-        else:
-            raise ValueError("M must be 'cubic_root', 'linear', or numeric tuple.")
-
-        lags = np.arange(-(n - 1), n)
-        if method == "bartlett":
-            weights = (np.abs(lags) < M_int) * (1 - np.abs(lags) / M_int)
-        if method == "constant":
-            weights = (np.abs(lags_x_all) < M_tuple[0]) * (
-                np.abs(lags_y_all) < M_tuple[1]
-            )
-        if method == "qs":
-            weights = (
-                (np.abs(lags_x_all) < M_tuple[0])
-                * (np.abs(lags_y_all) < M_tuple[1])
-                * qs_kernel(np.abs(lags_x_all) / b_qs)
-                * qs_kernel(np.abs(lags_y_all) / b_qs)
-            )
-        if method == "naive":
-            # known to perform poorly, testing only!!
-            weights = np.ones((len(lags_x), len(lags_y)))
-        # print(weights)
-        # print(weights.shape)
-        # print(X_standard.mean())
-        # print(X_standard.std())
-
-        cov = est_exp_X0Yh(X, X) - mean_plugin**2
-
-        var = np.sum(weights * cov) / n
-
-    # print(var)
-    if var < 0:
-        warnings.warn("Estimated variance is negative. Check!")
-        se = np.nan
-    else:
-        se = np.sqrt(var)
-    runtime_secs = time.time() - start_time
-    return mean_est, se, runtime_secs, M_int
-
-
-def sim_single_mean(
-    m_sim=5,
-    n=64,
-    var=1.0,
-    len_scale=10.0,
-    seed=None,
-    return_summary=True,
-    method="bartlett",
-    iid=False,
-    M=None,
-    b_qs=None,
-    square=False,
-):
-    """
-    Run mean estimation simulations for a single setting.
-
-    Parameters
-    ----------
-    m_sim : int, optional (default=5)
-        Number of simulations.
-    n : int, optional (default=64)
-        Length of the time series.
-    var : float, optional (default=1.0)
-        Variance of the field.
-    len_scale : float, optional (default=10.0)
-        Length scale of spatial correlation.
-    seed : int or None, optional (default=None)
-        Random seed.
-    return_summary : bool, optional (default=True)
-        If True, returns summarized results.
-    method : str, optional (default="bartlett")
-        HAC kernel type.
-    iid : bool, optional (default=False)
-        If True, generates iid data instead of correlated.
-    M : int or None, optional (default=None)
-        Lag truncation value.
-    b_qs : float or None, optional (default=None)
-        Bandwidth for QS kernel.
-    square : bool, optional (default=False)
-        If True, estimates mean of squared field.
-
-    Returns
-    -------
-    results : pd.DataFrame
-        Simulation results with columns: sim_id, est, se, runtime, lower, upper, bias,
-        cover, n, len_scale, m_sim, method, M, b_qs, M_method.
-    """
-    # if seed = None, rng.integers will genereate a random number
-    rng = np.random.default_rng(seed)
-
-    results = []
-    x = np.arange(n) - n // 2
-    if square:
-        truth = var
-    else:
-        truth = 0
-    if not iid:
-        model = gs.Gaussian(dim=1, var=var, len_scale=len_scale)
-        srf = gs.SRF(model)
-    for i in range(1, m_sim + 1):
-        if iid:
-            X = np.random.normal(loc=0, scale=np.sqrt(var), size=n)
-        else:
-            X = srf.structured(x, seed=rng.integers(0, 1e9))
-        if square:
-            X = X**2
-        est, se, runtime_secs, M_int = mean(X, method=method, M=M, b_qs=b_qs)
-        results.append({"sim_id": i, "est": est, "se": se, "runtime": runtime_secs})
-
-    results = pd.DataFrame(results)
-    results = results.assign(
-        lower=results["est"] - 1.96 * results["se"],
-        upper=results["est"] + 1.96 * results["se"],
-    )
-    results = results.assign(
-        bias=est, cover=1 * (truth <= results["upper"]) & (truth >= results["lower"])
-    )
-    if return_summary:
-        results = results_summary(results)
-    results = results.assign(
-        n=n,
-        len_scale=len_scale,
-        m_sim=m_sim,
-        method=method,
-        M=M_int,
-        b_qs=b_qs,
-        M_method=str(M),
-    )
-    return results
-
-
-def sim_multiple_mean(
-    setting_df, m_sim, return_summary=False, method="bartlett", iid=False, square=False
-):
-    """
-    Run mean estimation simulations for multiple settings.
-
-    Parameters
-    ----------
-    setting_df : pd.DataFrame
-        Settings to iterate over with columns: nx, len_scale, M, b_qs.
-    m_sim : int
-        Number of simulations per setting.
-    return_summary : bool, optional (default=False)
-        If True, returns summarized results.
-    method : str, optional (default="bartlett")
-        HAC kernel type.
-    iid : bool, optional (default=False)
-        If True, generates iid data.
-    square : bool, optional (default=False)
-        If True, estimates mean of squared field.
-
-    Returns
-    -------
-    results : pd.DataFrame
-        Combined results from all settings.
-    """
-    results = []
-    for i in setting_df.index:
-        print(
-            f"----performing simulation, current setting number: {i + 1}, remaining settings: {setting_df.shape[0] - i - 1}----"
-        )
-        results_single = sim_single_mean(
-            m_sim=m_sim,
-            n=setting_df["nx"][i],
-            len_scale=setting_df["len_scale"][i],
-            return_summary=return_summary,
-            method=method,
-            iid=iid,
-            M=setting_df["M"][i],
-            b_qs=setting_df["b_qs"][i],
-            square=square,
-        )
-        results_single = results_single.assign(setting_id=i + 1)
-        results.append(results_single)
-    results = pd.concat(results, ignore_index=True)
-    return results
+# def mean(
+#     X,
+#     M="cubic_root",
+#     method="bartlett",
+#     check=False,
+#     b_qs=5,
+#     use_true_mean=False,
+#     true_mean=None,
+# ):
+#     """
+#     Estimate mean and standard error for autocorrelated 1D data.
+#
+#     Parameters
+#     ----------
+#     X : ndarray
+#         1D input data.
+#     M : str or int, optional (default="cubic_root")
+#         Lag truncation method: 'cubic_root', 'linear', or numeric.
+#     method : str, optional (default="bartlett")
+#         HAC kernel type: 'iid', 'bartlett', 'constant', 'qs', or 'naive'.
+#     check : bool, optional (default=False)
+#         If True, print diagnostic information.
+#     b_qs : float, optional (default=5)
+#         Bandwidth parameter for QS kernel.
+#     use_true_mean : bool, optional (default=False)
+#         If True, use true_mean for calculations.
+#     true_mean : float or None, optional (default=None)
+#         Known true mean value.
+#
+#     Returns
+#     -------
+#     mean_est : float
+#         Estimated mean.
+#     se : float
+#         Standard error of the mean estimate.
+#     runtime_secs : float
+#         Computation time in seconds.
+#     M_int : int
+#         Lag truncation value used.
+#     """
+#     start_time = time.time()
+#     n = len(X)
+#
+#     mean_est = X.mean()
+#     sd = X.std()
+#     if use_true_mean:
+#         mean_plugin = true_mean
+#     else:
+#         mean_plugin = mean_est
+#     if method == "iid":
+#         var = sd**2 / n
+#     else:
+#         # --------weight function and truncation lag numbder -----------
+#         if M == "cubic_root":
+#             M_int = np.ceil(n**0.33)
+#         elif M == "linear":
+#             M_int = np.floor(n / 5)
+#             # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
+#         elif isinstance(M, int):
+#             M_int = M
+#         else:
+#             raise ValueError("M must be 'cubic_root', 'linear', or numeric tuple.")
+#
+#         lags = np.arange(-(n - 1), n)
+#         if method == "bartlett":
+#             weights = (np.abs(lags) < M_int) * (1 - np.abs(lags) / M_int)
+#         if method == "constant":
+#             weights = (np.abs(lags_x_all) < M_tuple[0]) * (
+#                 np.abs(lags_y_all) < M_tuple[1]
+#             )
+#         if method == "qs":
+#             weights = (
+#                 (np.abs(lags_x_all) < M_tuple[0])
+#                 * (np.abs(lags_y_all) < M_tuple[1])
+#                 * qs_kernel(np.abs(lags_x_all) / b_qs)
+#                 * qs_kernel(np.abs(lags_y_all) / b_qs)
+#             )
+#         if method == "naive":
+#             # known to perform poorly, testing only!!
+#             weights = np.ones((len(lags_x), len(lags_y)))
+#         # print(weights)
+#         # print(weights.shape)
+#         # print(X_standard.mean())
+#         # print(X_standard.std())
+#
+#         cov = est_exp_X0Yh(X, X) - mean_plugin**2
+#
+#         var = np.sum(weights * cov) / n
+#
+#     # print(var)
+#     if var < 0:
+#         warnings.warn("Estimated variance is negative. Check!")
+#         se = np.nan
+#     else:
+#         se = np.sqrt(var)
+#     runtime_secs = time.time() - start_time
+#     return mean_est, se, runtime_secs, M_int
+#
+#
+# def sim_single_mean(
+#     m_sim=5,
+#     n=64,
+#     var=1.0,
+#     len_scale=10.0,
+#     seed=None,
+#     return_summary=True,
+#     method="bartlett",
+#     iid=False,
+#     M=None,
+#     b_qs=None,
+#     square=False,
+# ):
+#     """
+#     Run mean estimation simulations for a single setting.
+#
+#     Parameters
+#     ----------
+#     m_sim : int, optional (default=5)
+#         Number of simulations.
+#     n : int, optional (default=64)
+#         Length of the time series.
+#     var : float, optional (default=1.0)
+#         Variance of the field.
+#     len_scale : float, optional (default=10.0)
+#         Length scale of spatial correlation.
+#     seed : int or None, optional (default=None)
+#         Random seed.
+#     return_summary : bool, optional (default=True)
+#         If True, returns summarized results.
+#     method : str, optional (default="bartlett")
+#         HAC kernel type.
+#     iid : bool, optional (default=False)
+#         If True, generates iid data instead of correlated.
+#     M : int or None, optional (default=None)
+#         Lag truncation value.
+#     b_qs : float or None, optional (default=None)
+#         Bandwidth for QS kernel.
+#     square : bool, optional (default=False)
+#         If True, estimates mean of squared field.
+#
+#     Returns
+#     -------
+#     results : pd.DataFrame
+#         Simulation results with columns: sim_id, est, se, runtime, lower, upper, bias,
+#         cover, n, len_scale, m_sim, method, M, b_qs, M_method.
+#     """
+#     # if seed = None, rng.integers will genereate a random number
+#     rng = np.random.default_rng(seed)
+#
+#     results = []
+#     x = np.arange(n) - n // 2
+#     if square:
+#         truth = var
+#     else:
+#         truth = 0
+#     if not iid:
+#         model = gs.Gaussian(dim=1, var=var, len_scale=len_scale)
+#         srf = gs.SRF(model)
+#     for i in range(1, m_sim + 1):
+#         if iid:
+#             X = np.random.normal(loc=0, scale=np.sqrt(var), size=n)
+#         else:
+#             X = srf.structured(x, seed=rng.integers(0, 1e9))
+#         if square:
+#             X = X**2
+#         est, se, runtime_secs, M_int = mean(X, method=method, M=M, b_qs=b_qs)
+#         results.append({"sim_id": i, "est": est, "se": se, "runtime": runtime_secs})
+#
+#     results = pd.DataFrame(results)
+#     results = results.assign(
+#         lower=results["est"] - 1.96 * results["se"],
+#         upper=results["est"] + 1.96 * results["se"],
+#     )
+#     results = results.assign(
+#         bias=est, cover=1 * (truth <= results["upper"]) & (truth >= results["lower"])
+#     )
+#     if return_summary:
+#         results = results_summary(results)
+#     results = results.assign(
+#         n=n,
+#         len_scale=len_scale,
+#         m_sim=m_sim,
+#         method=method,
+#         M=M_int,
+#         b_qs=b_qs,
+#         M_method=str(M),
+#     )
+#     return results
+#
+#
+# def sim_multiple_mean(
+#     setting_df, m_sim, return_summary=False, method="bartlett", iid=False, square=False
+# ):
+#     """
+#     Run mean estimation simulations for multiple settings.
+#
+#     Parameters
+#     ----------
+#     setting_df : pd.DataFrame
+#         Settings to iterate over with columns: nx, len_scale, M, b_qs.
+#     m_sim : int
+#         Number of simulations per setting.
+#     return_summary : bool, optional (default=False)
+#         If True, returns summarized results.
+#     method : str, optional (default="bartlett")
+#         HAC kernel type.
+#     iid : bool, optional (default=False)
+#         If True, generates iid data.
+#     square : bool, optional (default=False)
+#         If True, estimates mean of squared field.
+#
+#     Returns
+#     -------
+#     results : pd.DataFrame
+#         Combined results from all settings.
+#     """
+#     results = []
+#     for i in setting_df.index:
+#         print(
+#             f"----performing simulation, current setting number: {i + 1}, remaining settings: {setting_df.shape[0] - i - 1}----"
+#         )
+#         results_single = sim_single_mean(
+#             m_sim=m_sim,
+#             n=setting_df["nx"][i],
+#             len_scale=setting_df["len_scale"][i],
+#             return_summary=return_summary,
+#             method=method,
+#             iid=iid,
+#             M=setting_df["M"][i],
+#             b_qs=setting_df["b_qs"][i],
+#             square=square,
+#         )
+#         results_single = results_single.assign(setting_id=i + 1)
+#         results.append(results_single)
+#     results = pd.concat(results, ignore_index=True)
+#     return results
 
 
 # sim_multiple(pd.DataFrame({'nx': [10],'n_dim': [1], 'rho':[0.4], 'len_scale':[None],
