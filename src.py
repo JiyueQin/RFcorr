@@ -276,20 +276,70 @@ def gen_corr_field(
         return (X, Y)
 
 
+def gen_mask(dim, shape="ellipse", axes=None):
+    """
+    Generate a fixed mask of valid grid points.
+
+    Parameters
+    ----------
+    dim : int or tuple of int
+        Dimensions of the grid.
+    shape : str, optional (default="ellipse")
+        Mask shape. Only 'ellipse' is supported: an ellipse (ellipsoid for n_dim > 2) centered
+        in the grid with its axes along the grid axes.
+    axes : float, tuple of float, or None, optional (default=None)
+        Semi-axis in each dimension as a fraction of half the side length, in (0, 1]. A float
+        uses the same fraction in every dimension. If None, all fractions are 1, i.e. the
+        ellipse inscribed in the grid.
+
+    Returns
+    -------
+    mask : ndarray of bool
+        True at valid grid points, shape `dim`.
+
+    Examples
+    --------
+    >>> mask = gen_mask((50, 50), axes=(1, 0.5))
+    >>> mask.shape
+    (50, 50)
+    """
+    if isinstance(dim, numbers.Integral):
+        dim = (dim,)
+    n_dim = len(dim)
+    if shape != "ellipse":
+        raise ValueError("shape must be 'ellipse'")
+    if axes is None:
+        axes = (1.0,) * n_dim
+    elif isinstance(axes, numbers.Number):
+        axes = (axes,) * n_dim
+    if len(axes) != n_dim:
+        raise ValueError("axes must have one entry per dimension")
+
+    # centered coordinates scaled by the semi-axes, so the ellipse is the unit ball
+    coords = np.indices(dim, dtype=float)
+    dist2 = sum(
+        ((coords[i] - (dim[i] - 1) / 2) / (axes[i] * dim[i] / 2)) ** 2 for i in range(n_dim)
+    )
+    return dist2 <= 1
+
+
 import numpy as np
 from scipy.signal import correlate2d, correlate
 
 
-def est_exp_X0Yh(X, Y, return_counts_lags=False):
+def est_exp_X0Yh(X, Y, return_counts_lags=False, mask=None):
     """
     Estimate E[X_0 * Y_h] for all spatial integer lags h on a grid.
 
     Parameters
     ----------
     X, Y : ndarray (same shape)
-        Input fields of any dimensionality.
+        Input fields of any dimensionality. If `mask` is given, X and Y must be 0 outside it.
     return_counts_lags : bool, optional (default=False)
         If False, returns only E. If True, returns (S, C, E, lag_ls).
+    mask : ndarray of bool or None, optional (default=None)
+        Valid grid points. If None, every grid point is valid. Lags with no valid pair get
+        E = NaN, since there is nothing to average.
 
     Returns
     -------
@@ -308,7 +358,10 @@ def est_exp_X0Yh(X, Y, return_counts_lags=False):
     dim = X.shape
 
     # todo: only have to do this once so could speed up here.
-    mask = np.ones(dim)
+    if mask is None:
+        mask = np.ones(dim)
+    else:
+        mask = mask.astype(float)
 
     # Sum of products at each lag
     S = correlate(X, Y, mode="full")
@@ -316,8 +369,9 @@ def est_exp_X0Yh(X, Y, return_counts_lags=False):
     C = correlate(mask, mask, mode="full")
     # max number of pairs
     # C = nx*ny
-    # estimate of the expectaion
-    E = S / C
+    # estimate of the expectaion; with a mask some lags have no valid pair (C is 0 up to
+    # FFT round-off), and those are NaN so get_se can drop them
+    E = np.divide(S, C, out=np.full_like(S, np.nan), where=C > 0.5)
     if not return_counts_lags:
         return E
     else:
@@ -393,7 +447,8 @@ def kernel_weights(x, type, bandwidth, M=None):
     """
     mask = np.abs(x) <= M
     if type == "constant":
-        return mask
+        # float weights, not booleans: np.ix_ treats a boolean array as indices
+        return mask.astype(float)
     else:
         if type.lower() == "bartlett":
             bandwidth = M + 1
@@ -409,17 +464,38 @@ import numbers
 from functools import reduce
 
 
+# se_method names follow the method names in the paper. Each gives two standard errors,
+# `se` (at the plugin rho) and `se_under_null` (at rho = 0):
+#   'general' -> RFCorr                                and RFCorr-0
+#   'gauss'   -> RFCorr-Gauss                          and RFCorr-Gauss-0
+#   'indep'   -> (1 - rho^2)^2 times RFCorr-Indep-0    and RFCorr-Indep-0
+#   'iid'     -> (1 - rho^2)^2 / n, ignoring spatial dependence
+SE_METHODS = ("general", "gauss", "indep", "iid")
+# earlier names, still accepted so saved method tables keep working
+SE_METHOD_ALIASES = {"hac": "general", "hac_gaussian": "gauss", "huristic": "indep"}
+
+
+def canonical_se_method(se_method):
+    """Return the se_method name used in the paper, mapping earlier names to it."""
+    name = str(se_method).lower()
+    name = SE_METHOD_ALIASES.get(name, name)
+    if name not in SE_METHODS:
+        raise ValueError(f"Unknown se_method {se_method!r}; choose from {SE_METHODS}.")
+    return name
+
+
 def corr(
     X,
     Y,
     M="cubic_root",
     true_rho=None,
-    se_method="hac",
+    se_method="general",
     kernel="bartlett",
     check=False,
     b_qs=5,
     constant=1,
     standardize = True,
+    mask=None,
 ):
     """
     Estimate correlation and its standard error for two fields.
@@ -432,8 +508,9 @@ def corr(
         Lag truncation method: 'cubic_root', 'linear', 'auto', or numeric value.
     true_rho : float or None, optional (default=None)
         Known true correlation for plugin estimation.
-    se_method : str, optional (default="hac")
-        Standard error method: 'iid', 'hac', 'hac_gaussian', or 'huristic'.
+    se_method : str, optional (default="general")
+        Standard error method: 'general', 'gauss', 'indep', or 'iid' (see
+        SE_METHODS). The earlier names 'hac', 'hac_gaussian', and 'huristic' are also accepted.
     kernel : str, optional (default="bartlett")
         Kernel type for HAC: 'bartlett', 'qs', or 'constant'.
     check : bool, optional (default=False)
@@ -445,15 +522,19 @@ def corr(
     standardize : bool, optional (default=True)
         If True, standardize X and Y (subtract mean, divide by std) before
         computing the standard error.
+    mask : ndarray of bool or None, optional (default=None)
+        Valid grid points, same shape as X and Y. Only these points enter the estimate and its
+        standard error; values outside the mask (including NaN) are ignored. If None, every grid
+        point is valid.
 
     Returns
     -------
     rho_est : float
         Estimated Pearson correlation.
     se : float
-        Standard error of the correlation estimate (at the plugin rho).
+        Standard error of the correlation estimate (at the plugin rho), e.g. RFCorr.
     se_under_null : float
-        Standard error computed under the null hypothesis rho = 0.
+        Standard error computed under the null hypothesis rho = 0, e.g. RFCorr-0.
     runtime_secs : float
         Computation time in seconds.
     M_tuple : tuple
@@ -462,24 +543,43 @@ def corr(
     start_time = time.time()
     if X.shape != Y.shape:
         raise ValueError("X and Y must have the same shape")
+    se_method = canonical_se_method(se_method)
     dim = np.array(X.shape)
-    rho_est = np.corrcoef(X.ravel(), Y.ravel())[0, 1]
-    if standardize: 
-        X_standard =  (X-X.mean())/X.std()
-        Y_standard =  (Y-Y.mean())/Y.std()
+    if mask is None:
+        rho_est = np.corrcoef(X.ravel(), Y.ravel())[0, 1]
+        if standardize:
+            X_standard =  (X-X.mean())/X.std()
+            Y_standard =  (Y-Y.mean())/Y.std()
+        else:
+            X_standard = X
+            Y_standard = Y
+        n_obs = None
     else:
-        X_standard = X
-        Y_standard = Y
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != X.shape:
+            raise ValueError("mask must have the same shape as X and Y")
+        X_valid, Y_valid = X[mask], Y[mask]
+        rho_est = np.corrcoef(X_valid, Y_valid)[0, 1]
+        if standardize:
+            X_standard = (X - X_valid.mean()) / X_valid.std()
+            Y_standard = (Y - Y_valid.mean()) / Y_valid.std()
+        else:
+            X_standard = X
+            Y_standard = Y
+        # zero outside the mask, so lag sums only pick up pairs of valid points
+        X_standard = np.where(mask, X_standard, 0.0)
+        Y_standard = np.where(mask, Y_standard, 0.0)
+        n_obs = mask.sum()
 
     if true_rho is None:
         rho_plugin = rho_est
     else:
         rho_plugin = true_rho
     # print('rho_plugin:', rho_plugin)
-    est_exp_ls = get_est_exp_ls(se_method, X_standard, Y_standard)
+    est_exp_ls = get_est_exp_ls(se_method, X_standard, Y_standard, mask=mask)
 
     se, M_tuple = get_se(
-        dim, 
+        dim,
         est_exp_ls,
         rho_plugin,
         M,
@@ -487,9 +587,10 @@ def corr(
         kernel,
         check,
         b_qs,
-        constant,)
-    
-    
+        constant,
+        n_obs=n_obs,)
+
+
     se_under_null, _ = get_se(
         dim,
         est_exp_ls,
@@ -499,7 +600,8 @@ def corr(
         kernel,
         check,
         b_qs,
-        constant,)
+        constant,
+        n_obs=n_obs,)
     
 
     runtime_secs = time.time() - start_time
@@ -514,11 +616,12 @@ def get_se(
     est_exp_ls,
     rho_plugin,
     M="cubic_root",
-    se_method="hac",
+    se_method="general",
     kernel="bartlett",
     check=False,
     b_qs=5,
     constant=1,
+    n_obs=None,
 ):
     """
     Compute the HAC standard error of the correlation estimate.
@@ -533,8 +636,13 @@ def get_se(
         Plugin correlation used in the variance formula (use 0 for the null SE).
     M : str or numeric, optional (default="cubic_root")
         Lag truncation method: 'cubic_root', 'linear', 'auto', an int, or a tuple of numerics.
-    se_method : str, optional (default="hac")
-        Standard error method: 'iid', 'hac', 'hac_gaussian', or 'huristic'.
+        The string rules use the same lag in every dimension, computed from the number of valid
+        grid points n rather than the side lengths. With side = n ** (1 / n_dim), 'cubic_root' is
+        ceil(constant * side ** 0.3), 'linear' is floor(constant * side / 5), and 'auto' is
+        ceil(constant * side ** (n_dim / (n_dim + 2))) = ceil(constant * n ** (1 / (n_dim + 2))).
+    se_method : str, optional (default="general")
+        Standard error method: 'general', 'gauss', 'indep', or 'iid' (see
+        SE_METHODS). The earlier names 'hac', 'hac_gaussian', and 'huristic' are also accepted.
     kernel : str, optional (default="bartlett")
         Kernel type for HAC weighting: 'bartlett', 'qs', or 'constant'.
     check : bool, optional (default=False)
@@ -543,6 +651,8 @@ def get_se(
         Bandwidth parameter for the QS kernel.
     constant : float, optional (default=1)
         Scaling constant for the M calculation.
+    n_obs : int or None, optional (default=None)
+        Number of valid grid points (the size of the mask). If None, every grid point is valid.
 
     Returns
     -------
@@ -552,9 +662,10 @@ def get_se(
     M_tuple : tuple
         Lag truncation values used.
     """
-    n = np.prod(dim)
+    n = np.prod(dim) if n_obs is None else n_obs
     n_dim = len(dim)
-    if se_method == "huristic":
+    se_method = canonical_se_method(se_method)
+    if se_method == "indep":
         # pre-compute the factor before setting rho_plugin to be 0
         factor = (1 - rho_plugin**2) ** 2 
         rho_plugin = 0
@@ -565,15 +676,23 @@ def get_se(
         M_tuple = (None,)
     else:
         # --------weight function and truncation lag numbder -----------
+        # the rules below give the same lag in every dimension, from the domain size n rather
+        # than side lengths: they apply the per-side rules to the side of a cube with n points.
+        # snap that side to an integer when it is one (up to float error), so on cubes the
+        # results are exactly those of the per-side rules
+        side = n ** (1 / n_dim)
+        if np.isclose(side, np.round(side), rtol=1e-12, atol=0):
+            side = np.round(side)
         if M == "cubic_root":
-            M_tuple = np.ceil(dim**0.3 * constant)
+            M_tuple = np.full(n_dim, np.ceil(side**0.3 * constant))
         elif M == "linear":
-            M_tuple = np.floor(dim / 5 * constant)
+            M_tuple = np.full(n_dim, np.floor(side / 5 * constant))
             # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
         elif M == "auto":
-            M_tuple = np.ceil(dim ** (n_dim / (n_dim + 2)) * constant)
+            M_tuple = np.full(n_dim, np.ceil(side ** (n_dim / (n_dim + 2)) * constant))
         elif isinstance(M, int):
-            M_tuple = (M,)
+            # same truncation lag in every dimension
+            M_tuple = (M,) * n_dim
         elif isinstance(M, tuple) and all(isinstance(x, numbers.Number) for x in M):
             M_tuple = M
         else:
@@ -591,7 +710,7 @@ def get_se(
         # print(X_standard.mean())
         # print(X_standard.std())
 
-        if se_method in ["hac_gaussian", "huristic"]:
+        if se_method in ["gauss", "indep"]:
             cov_ls = est_exp_ls
         else:
             offsets = [
@@ -607,10 +726,11 @@ def get_se(
             ]
             cov_ls = [e - o for e, o in zip(est_exp_ls, offsets)]
 
-        omega = np.array([np.sum(weights * cov) for cov in cov_ls]).reshape((3, 3))
+        # nansum drops lags with no valid pair under a mask (NaN from est_exp_X0Yh)
+        omega = np.array([np.nansum(weights * cov) for cov in cov_ls]).reshape((3, 3))
         vec = np.array([1, -0.5 * rho_plugin, -0.5 * rho_plugin])
         var = (vec @ omega @ vec) / n
-        if se_method == "huristic":
+        if se_method == "indep":
             var = factor * var
         # print(X_standard_Y_standard.shape)
         # if true_rho == 0:
@@ -644,17 +764,20 @@ def get_se(
 
 
 
-def get_est_exp_ls(se_method, X_standard, Y_standard):
+def get_est_exp_ls(se_method, X_standard, Y_standard, mask=None):
     """
     Compute the lag-wise expectation estimates entering the HAC variance.
 
     Parameters
     ----------
     se_method : str
-        Standard error method: 'iid', 'hac', 'hac_gaussian', or 'huristic'.
+        Standard error method: 'general', 'gauss', 'indep', or 'iid' (see
+        SE_METHODS); the earlier names 'hac', 'hac_gaussian', and 'huristic' are also accepted.
         Determines which set of cross-product expectations is computed.
     X_standard, Y_standard : ndarray (same shape)
-        The (optionally standardized) input fields.
+        The (optionally standardized) input fields, 0 outside `mask`.
+    mask : ndarray of bool or None, optional (default=None)
+        Valid grid points. If None, every grid point is valid.
 
     Returns
     -------
@@ -662,15 +785,16 @@ def get_est_exp_ls(se_method, X_standard, Y_standard):
         List of 9 lag-wise expectation arrays, ordered to fill the 3x3 omega
         matrix by row in `get_se`.
     """
-    if se_method in ["hac_gaussian", "huristic"]:
-        rho_xx_h = est_exp_X0Yh(X_standard, X_standard)
-        rho_yy_h = est_exp_X0Yh(Y_standard, Y_standard)
-        if se_method == "huristic":
+    se_method = canonical_se_method(se_method)
+    if se_method in ["gauss", "indep"]:
+        rho_xx_h = est_exp_X0Yh(X_standard, X_standard, mask=mask)
+        rho_yy_h = est_exp_X0Yh(Y_standard, Y_standard, mask=mask)
+        if se_method == "indep":
             rho_xy_h = 0
             rho_yx_h = 0
         else:
-            rho_xy_h = est_exp_X0Yh(X_standard, Y_standard)
-            rho_yx_h = est_exp_X0Yh(Y_standard, X_standard)
+            rho_xy_h = est_exp_X0Yh(X_standard, Y_standard, mask=mask)
+            rho_yx_h = est_exp_X0Yh(Y_standard, X_standard, mask=mask)
         # order the matrix by row
         est_exp_ls = [
             rho_xx_h * rho_yy_h + rho_xy_h * rho_yx_h,
@@ -688,15 +812,15 @@ def get_est_exp_ls(se_method, X_standard, Y_standard):
         Y_standard_square = Y_standard**2
         X_standard_Y_standard = X_standard * Y_standard
         est_exp_ls = [
-            est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard),
-            est_exp_X0Yh(X_standard_Y_standard, X_standard_square),
-            est_exp_X0Yh(X_standard_Y_standard, Y_standard_square),
-            est_exp_X0Yh(X_standard_square, X_standard_Y_standard),
-            est_exp_X0Yh(X_standard_square, X_standard_square),
-            est_exp_X0Yh(X_standard_square, Y_standard_square),
-            est_exp_X0Yh(Y_standard_square, X_standard_Y_standard),
-            est_exp_X0Yh(Y_standard_square, X_standard_square),
-            est_exp_X0Yh(Y_standard_square, Y_standard_square),
+            est_exp_X0Yh(X_standard_Y_standard, X_standard_Y_standard, mask=mask),
+            est_exp_X0Yh(X_standard_Y_standard, X_standard_square, mask=mask),
+            est_exp_X0Yh(X_standard_Y_standard, Y_standard_square, mask=mask),
+            est_exp_X0Yh(X_standard_square, X_standard_Y_standard, mask=mask),
+            est_exp_X0Yh(X_standard_square, X_standard_square, mask=mask),
+            est_exp_X0Yh(X_standard_square, Y_standard_square, mask=mask),
+            est_exp_X0Yh(Y_standard_square, X_standard_Y_standard, mask=mask),
+            est_exp_X0Yh(Y_standard_square, X_standard_square, mask=mask),
+            est_exp_X0Yh(Y_standard_square, Y_standard_square, mask=mask),
         ]
     return est_exp_ls
 
@@ -881,8 +1005,11 @@ def sim_single(
     fwhm=2,
     truncate=4,
     distribution="gaussian",
-    noise_df = None, 
-    trans = None
+    noise_df = None,
+    trans = None,
+    mask=None,
+    mask_axes=None,
+    fwhm_ratio=1,
 ):
     """
     Run correlation estimation simulations for a single setting.
@@ -923,6 +1050,16 @@ def sim_single(
         Degrees of freedom for the 't' or 'chisq' noise distribution.
     trans : str or None, optional (default=None)
         Optional pointwise transformation applied to the fields (e.g. 'square').
+    mask : str or None, optional (default=None)
+        Shape of a fixed mask of valid grid points, the same in every simulation: 'ellipse'
+        (see `gen_mask`). The fields are generated on the full grid and only the points in the
+        mask are used. If None, every grid point is used.
+    mask_axes : float, tuple of float, or None, optional (default=None)
+        Semi-axes of the ellipse as fractions of half the side lengths (see `gen_mask`).
+    fwhm_ratio : float, optional (default=1)
+        Ratio of the smoothing of the two independent fields generating X and Y (see
+        `gen_corr_field`): the field entering only Y is smoothed with ``fwhm / fwhm_ratio``.
+        With 1, X and Y have the same smoothness; with 2, Y is partly rougher.
 
     Returns
     -------
@@ -930,8 +1067,9 @@ def sim_single(
         Simulation results. When `return_summary=False`, columns include: sim_id,
         method_id, est, se, se_under_null, runtime, M0, lower, upper, lower_raw,
         upper_raw, p, p_raw, bias, cover, cover_raw, reject, reject_raw, plus the
-        setting columns (rho, nx, n_dim, len_scale, m_sim, gen_method, fwhm,
-        distribution, noise_df, trans) and the columns from method_df.
+        setting columns (rho, nx, n_dim, len_scale, m_sim, gen_method, fwhm, fwhm_ratio,
+        distribution, noise_df, trans, mask, mask_axes, n_obs) and the columns from
+        method_df. n_obs is the number of grid points used.
         When `return_summary=True`, returns the per-method summary from
         `results_summary` joined with these setting/method columns.
     """
@@ -958,6 +1096,16 @@ def sim_single(
         # use the same side length
         dim = (nx,) * n_dim
 
+    # fixed mask, the same in every simulation; a missing value in setting_df (NaN) means none
+    if isinstance(mask, float) and np.isnan(mask):
+        mask = None
+    if isinstance(mask_axes, float) and np.isnan(mask_axes):
+        mask_axes = None
+    mask_array = None if mask is None else gen_mask(dim, shape=mask, axes=mask_axes)
+    if fwhm_ratio is None or (isinstance(fwhm_ratio, float) and np.isnan(fwhm_ratio)):
+        fwhm_ratio = 1
+    n_obs = np.prod(dim) if mask_array is None else mask_array.sum()
+
     # if M_trunc is None:
     #     rho_final = rho
     # else:
@@ -977,8 +1125,9 @@ def sim_single(
             fwhm=fwhm,
             truncate=truncate,
             distribution=distribution,
-            noise_df = noise_df, 
-            trans = trans 
+            noise_df = noise_df,
+            trans = trans,
+            fwhm_ratio=fwhm_ratio,
         )
 
         # print('shape of X:', X.shape, 'shape of Y:', Y.shape)
@@ -997,6 +1146,7 @@ def sim_single(
                 M=M[j],
                 b_qs=b_qs[j],
                 constant=constant[j],
+                mask=mask_array,
             )
             # python list append is similar to preallocate and then fill, faster than concat a row to a pandas dataframe
             results.append(
@@ -1048,9 +1198,14 @@ def sim_single(
         m_sim=m_sim,
         gen_method=gen_method,
         fwhm=fwhm,
+        fwhm_ratio=fwhm_ratio,
         distribution = distribution,
         noise_df = noise_df,
-        trans = trans 
+        trans = trans,
+        mask=mask,
+        # a list, so a tuple of axes is stored as one value per row
+        mask_axes=[mask_axes] * len(results),
+        n_obs=n_obs,
     )
     # join using the index of method_df
     results = results.join(method_df, on="method_id")
@@ -1066,7 +1221,9 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
     ----------
     setting_df : pd.DataFrame
         Settings to iterate over with columns: rho, nx, n_dim, len_scale,
-        gen_method, fwhm, distribution, noise_df, trans.
+        gen_method, fwhm, distribution, noise_df, trans, and optionally mask,
+        mask_axes, and fwhm_ratio (see `sim_single`; without these columns no mask is used
+        and fwhm_ratio is 1).
     method_df : pd.DataFrame
         Methods to compare with columns: use_true_rho, method, kernel, M, b_qs, constant.
     m_sim : int
@@ -1097,7 +1254,10 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
             fwhm=setting_df["fwhm"][i],
             distribution = setting_df["distribution"][i],
             noise_df = setting_df["noise_df"][i],
-            trans = setting_df["trans"][i] 
+            trans = setting_df["trans"][i],
+            mask=setting_df["mask"][i] if "mask" in setting_df else None,
+            mask_axes=setting_df["mask_axes"][i] if "mask_axes" in setting_df else None,
+            fwhm_ratio=setting_df["fwhm_ratio"][i] if "fwhm_ratio" in setting_df else 1,
         )
         results_single.insert(0, "setting_id", i)
         # results_single = results_single.assign(setting_id=i + 1)
