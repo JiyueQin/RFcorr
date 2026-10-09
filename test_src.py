@@ -235,6 +235,35 @@ def test_corr_indep_se_scales_null_se(fields_2d):
     assert se == pytest.approx((1 - rho_est**2) * se0)
 
 
+def test_corr_gauss_null_sets_lag0_cross_correlation_to_zero(fields_2d):
+    # RFCorr-Gauss-0 imposes rho = 0 at lag 0, where the cross-correlation equals rho_hat.
+    # Lag 0 has weight 1, so the null variance drops by exactly rho_hat^2 / n.
+    X, Y = fields_2d
+    rho_est, _, se0, _, M_tuple = src.corr(X, Y, se_method="gauss", M="auto")
+    X_s = (X - X.mean()) / X.std()
+    Y_s = (Y - Y.mean()) / Y.std()
+    est_unrestricted = src.get_est_exp_ls("gauss", X_s, Y_s)
+    se0_unrestricted, _ = src.get_se(np.array(X.shape), est_unrestricted, 0, M="auto",
+                                     se_method="gauss")
+    assert se0**2 == pytest.approx(se0_unrestricted**2 - rho_est**2 / X.size)
+
+
+def test_get_est_exp_ls_impose_null_only_changes_lag0():
+    rng = np.random.default_rng(3)
+    X, Y = rng.normal(size=(6, 7)), rng.normal(size=(6, 7))
+    full = src.get_est_exp_ls("gauss", X, Y)
+    null = src.get_est_exp_ls("gauss", X, Y, impose_null=True)
+    center = (5, 6)
+    for a, b in zip(full, null):
+        diff = np.argwhere(~np.isclose(a, b))
+        assert all(tuple(d) == center for d in diff)
+    # independence and general methods ignore the option
+    for method in ["indep", "general"]:
+        for a, b in zip(src.get_est_exp_ls(method, X, Y),
+                        src.get_est_exp_ls(method, X, Y, impose_null=True)):
+            np.testing.assert_array_equal(a, b)
+
+
 @pytest.mark.parametrize("se_method", ["general", "gauss", "indep"])
 @pytest.mark.parametrize("kernel", ["bartlett", "qs", "constant"])
 def test_corr_spatial_methods_finite(fields_2d, se_method, kernel):
@@ -618,3 +647,39 @@ def test_sim_multiple_fwhm_ratio_column(method_df):
     # without the column, the ratio is 1
     out1 = src.sim_multiple(setting_df.drop(columns="fwhm_ratio"), method_df, m_sim=2)
     assert (out1["fwhm_ratio"] == 1).all()
+
+
+# ---------------------------------------------------------------------------
+# plugin bandwidth
+# ---------------------------------------------------------------------------
+def test_plugin_bandwidth_matches_andrews_in_1d():
+    # V with AR(1) autocovariance r^|h| in 1D: m = 1.1447 (a^2 n)^(1/3), a = 2r / (1 - r^2)
+    n, r = 1000, 0.6
+    h = np.arange(-(n - 1), n)
+    cov_ls = [r ** np.abs(h)] + [0] * 8
+    a = 2 * r / (1 - r**2)
+    m = 1.1447 * (a**2 * n) ** (1 / 3)
+    M = src.plugin_bandwidth(cov_ls, np.array([1, 0, 0]), n, (n,))
+    assert M[0] == np.ceil(m - 1)
+
+
+def test_plugin_bandwidth_grows_with_smoothness():
+    Ms = []
+    for fwhm in (1, 2, 4):
+        X, Y = src.gen_corr_field(0, (60, 60), fwhm=fwhm, seed=0, method="gaussian_filter")
+        Ms.append(src.corr(X, Y, M="plugin", true_rho=0)[4][0])
+    assert Ms[0] < Ms[1] < Ms[2]
+
+
+def test_plugin_bandwidth_capped_at_half_side():
+    X, Y = src.gen_corr_field(0, (12, 40), fwhm=8, seed=0, method="gaussian_filter")
+    M = src.corr(X, Y, M="plugin", true_rho=0)[4]
+    assert M[0] <= 5 and M[1] <= 19 and M[0] >= 1
+
+
+@pytest.mark.parametrize("se_method", ["general", "gauss", "indep"])
+def test_corr_plugin_runs_with_mask(se_method):
+    X, Y = src.gen_corr_field(0.4, (30, 40), fwhm=3, seed=1)
+    mask = src.gen_mask(X.shape, axes=(0.8, 1))
+    rho, se, se0, _, M = src.corr(X, Y, M="plugin", se_method=se_method, mask=mask)
+    assert np.isfinite(se) and np.isfinite(se0) and (M >= 1).all()

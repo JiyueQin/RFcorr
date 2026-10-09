@@ -166,7 +166,9 @@ def gen_corr_field(
     distribution="gaussian",
     noise_df = None,
     fwhm_ratio = 1,
-    trans = None
+    trans = None,
+    dep_model = None,
+    dep_strength = 1.0,
 ):
     """
     Generate a pair of correlated random fields with optional truncation.
@@ -202,6 +204,19 @@ def gen_corr_field(
         ``fwhm / fwhm_ratio``, allowing X and Y to have different smoothness.
     trans : str or None, optional (default=None)
         Optional pointwise transformation applied to each field (e.g. 'square').
+    dep_model : str or None, optional (default=None)
+        If None, Y = rho U + sqrt(1 - rho^2) V with U, V independent. Otherwise V is replaced by
+        a field W that is uncorrelated with U at every pair of locations but depends on U: W is
+        the residual of a nonlinear field on X = U with the population slope, rescaled to unit
+        variance. With lam = dep_strength and U, V standardized,
+        'quad': W = lam (U^2 - 1) / sqrt(2) + sqrt(1 - lam^2) V, the residual of
+        U + W on U (slope 1).
+        'exp': W = lam (exp(U) - e^(1/2) - e^(1/2) U) / sqrt(e (e - 2)) + sqrt(1 - lam^2) V,
+        the residual of exp(U) on U (slope e^(1/2)) mixed with V.
+        So rho = 0 gives X and Y uncorrelated but dependent. Requires Gaussian U and trans=None.
+    dep_strength : float, optional (default=1.0)
+        Weight lam in [0, 1] of the dependent part of W; lam = 0 gives W = V (independence).
+        Only used when ``dep_model`` is not None.
 
     Returns
     -------
@@ -261,6 +276,23 @@ def gen_corr_field(
         noise_df = noise_df, 
         trans = trans
     )
+    if dep_model is not None:
+        if distribution != "gaussian" or trans is not None:
+            raise ValueError("dep_model requires distribution='gaussian' and trans=None")
+        # population moments below are for standard normal U, V
+        sd = np.sqrt(var)
+        U_std, V_std = U / sd, V / sd
+        lam = dep_strength
+        if dep_model == "quad":
+            W = lam * (U_std**2 - 1) / np.sqrt(2)
+        elif dep_model == "exp":
+            e = np.exp(1)
+            W = lam * (np.exp(U_std) - np.sqrt(e) - np.sqrt(e) * U_std) / np.sqrt(e * (e - 2))
+        else:
+            raise ValueError("dep_model must be None, 'quad', or 'exp'")
+        # unit-variance residual, uncorrelated with U but dependent on it when lam > 0
+        V = (W + np.sqrt(max(0.0, 1.0 - lam**2)) * V_std) * sd
+
     beta = np.sqrt(max(0.0, 1.0 - rho**2))
     # correlated pair of fields
     X = U
@@ -591,9 +623,16 @@ def corr(
         n_obs=n_obs,)
 
 
+    # under the null, the Gaussian method also sets the lag-0 cross-correlation to 0
+    if se_method == "gauss":
+        est_exp_ls_null = get_est_exp_ls(
+            se_method, X_standard, Y_standard, mask=mask, impose_null=True
+        )
+    else:
+        est_exp_ls_null = est_exp_ls
     se_under_null, _ = get_se(
         dim,
-        est_exp_ls,
+        est_exp_ls_null,
         0,
         M,
         se_method,
@@ -609,6 +648,68 @@ def corr(
 
 
 from scipy.stats import norm
+
+
+def plugin_bandwidth(cov_ls, vec, n, dim, constant=1, r_max=0.97):
+    """
+    Data-driven lag truncation for the product Bartlett kernel (parametric plug-in).
+
+    The variance being estimated is the long-run variance of the scalar series V = vec' T,
+    whose lag-h autocovariance is vec' C(h) vec. Along each axis i, V is approximated by an
+    AR(1) with lag-1 autocorrelation r_i (from the same lag estimates used for the variance),
+    giving the bias constant a_i = 2 r_i / (1 - r_i^2) (Andrews 1991). With one bandwidth m for
+    all axes, the asymptotic MSE of the Bartlett estimator, proportional to
+    (sum_i a_i / m)^2 + (2 / n) (2 m / 3)^n_dim, is minimized at
+    m = [(sum_i a_i)^2 n / (n_dim (2/3)^n_dim)]^(1 / (n_dim + 2)),
+    which in 1D is Andrews' 1.1447 (a^2 n)^(1/3). Smoother fields give larger r_i and so a larger m.
+
+    Parameters
+    ----------
+    cov_ls : list of ndarray
+        The 9 lag-wise covariance arrays of T (the 3x3 entries by row), as in `get_se`.
+    vec : ndarray
+        Weights of the 3 components of T in V.
+    n : int
+        Number of valid grid points.
+    dim : sequence of int
+        Shape of the grid.
+    constant : float, optional (default=1)
+        Scaling constant for the bandwidth.
+    r_max : float, optional (default=0.97)
+        Upper bound on |r_i|, so that nearly nonstationary fields do not give an unbounded lag.
+
+    Returns
+    -------
+    M_tuple : ndarray
+        Lag truncation in each dimension. The Bartlett weights in `kernel_weights` are
+        1 - |h| / (M + 1), so M = m - 1, rounded up, at least 1, and at most half the side.
+    """
+    n_dim = len(dim)
+    center = [d - 1 for d in dim]
+
+    def acov(idx):
+        # vec' C(h) vec at the lag with array index idx; entries can be scalars (zero terms)
+        return sum(
+            vec[a] * vec[b] * (np.asarray(cov_ls[3 * a + b])[tuple(idx)]
+                               if np.ndim(cov_ls[3 * a + b]) else cov_ls[3 * a + b])
+            for a in range(3) for b in range(3)
+        )
+
+    s0 = acov(center)
+    a_sum = 0.0
+    for i in range(n_dim):
+        if dim[i] < 2 or not s0 > 0:
+            continue
+        plus, minus = list(center), list(center)
+        plus[i] += 1
+        minus[i] -= 1
+        r = np.nan_to_num((acov(plus) + acov(minus)) / (2 * s0))
+        r = min(abs(r), r_max)
+        a_sum += 2 * r / (1 - r**2)
+
+    m = (a_sum**2 * n / (n_dim * (2 / 3) ** n_dim)) ** (1 / (n_dim + 2))
+    M = max(1.0, np.ceil(constant * m - 1))
+    return np.array([min(M, max(1, (d - 1) // 2)) for d in dim], dtype=float)
 
 
 def get_se(
@@ -635,11 +736,12 @@ def get_se(
     rho_plugin : float
         Plugin correlation used in the variance formula (use 0 for the null SE).
     M : str or numeric, optional (default="cubic_root")
-        Lag truncation method: 'cubic_root', 'linear', 'auto', an int, or a tuple of numerics.
-        The string rules use the same lag in every dimension, computed from the number of valid
-        grid points n rather than the side lengths. With side = n ** (1 / n_dim), 'cubic_root' is
-        ceil(constant * side ** 0.3), 'linear' is floor(constant * side / 5), and 'auto' is
-        ceil(constant * side ** (n_dim / (n_dim + 2))) = ceil(constant * n ** (1 / (n_dim + 2))).
+        Lag truncation method: 'cubic_root', 'linear', 'auto', 'plugin', an int, or a tuple of
+        numerics. The string rules use the same lag in every dimension, computed from the number
+        of valid grid points n rather than the side lengths. With side = n ** (1 / n_dim),
+        'cubic_root' is ceil(constant * side ** 0.3), 'linear' is floor(constant * side / 5), and
+        'auto' is ceil(constant * side ** (n_dim / (n_dim + 2))) = ceil(constant * n ** (1 / (n_dim + 2))).
+        'plugin' is data driven and grows with the smoothness of the fields (see `plugin_bandwidth`).
     se_method : str, optional (default="general")
         Standard error method: 'general', 'gauss', 'indep', or 'iid' (see
         SE_METHODS). The earlier names 'hac', 'hac_gaussian', and 'huristic' are also accepted.
@@ -675,41 +777,6 @@ def get_se(
         var = (1 - rho_plugin**2) ** 2 / n
         M_tuple = (None,)
     else:
-        # --------weight function and truncation lag numbder -----------
-        # the rules below give the same lag in every dimension, from the domain size n rather
-        # than side lengths: they apply the per-side rules to the side of a cube with n points.
-        # snap that side to an integer when it is one (up to float error), so on cubes the
-        # results are exactly those of the per-side rules
-        side = n ** (1 / n_dim)
-        if np.isclose(side, np.round(side), rtol=1e-12, atol=0):
-            side = np.round(side)
-        if M == "cubic_root":
-            M_tuple = np.full(n_dim, np.ceil(side**0.3 * constant))
-        elif M == "linear":
-            M_tuple = np.full(n_dim, np.floor(side / 5 * constant))
-            # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
-        elif M == "auto":
-            M_tuple = np.full(n_dim, np.ceil(side ** (n_dim / (n_dim + 2)) * constant))
-        elif isinstance(M, int):
-            # same truncation lag in every dimension
-            M_tuple = (M,) * n_dim
-        elif isinstance(M, tuple) and all(isinstance(x, numbers.Number) for x in M):
-            M_tuple = M
-        else:
-            raise ValueError("M must be 'cubic_root', 'linear', or numeric.")
-
-        lag_ls = [np.arange(-(dim_i - 1), dim_i) for dim_i in dim]
-
-        weights_ls = [
-            kernel_weights(lag_ls[i], type=kernel, bandwidth=b_qs, M=M_tuple[i])
-            for i in range(n_dim)
-        ]
-        weights = reduce(np.multiply, np.ix_(*weights_ls))
-
-        # print(weights.shape)
-        # print(X_standard.mean())
-        # print(X_standard.std())
-
         if se_method in ["gauss", "indep"]:
             cov_ls = est_exp_ls
         else:
@@ -725,10 +792,47 @@ def get_se(
                 1,
             ]
             cov_ls = [e - o for e, o in zip(est_exp_ls, offsets)]
+        vec = np.array([1, -0.5 * rho_plugin, -0.5 * rho_plugin])
+
+        # --------weight function and truncation lag numbder -----------
+        # the rules below give the same lag in every dimension, from the domain size n rather
+        # than side lengths: they apply the per-side rules to the side of a cube with n points.
+        # snap that side to an integer when it is one (up to float error), so on cubes the
+        # results are exactly those of the per-side rules
+        side = n ** (1 / n_dim)
+        if np.isclose(side, np.round(side), rtol=1e-12, atol=0):
+            side = np.round(side)
+        if M == "cubic_root":
+            M_tuple = np.full(n_dim, np.ceil(side**0.3 * constant))
+        elif M == "linear":
+            M_tuple = np.full(n_dim, np.floor(side / 5 * constant))
+            # M_tuple = np.floor((nx**0.33, ny**0.33))*1.4
+        elif M == "auto":
+            M_tuple = np.full(n_dim, np.ceil(side ** (n_dim / (n_dim + 2)) * constant))
+        elif M == "plugin":
+            M_tuple = plugin_bandwidth(cov_ls, vec, n, dim, constant)
+        elif isinstance(M, int):
+            # same truncation lag in every dimension
+            M_tuple = (M,) * n_dim
+        elif isinstance(M, tuple) and all(isinstance(x, numbers.Number) for x in M):
+            M_tuple = M
+        else:
+            raise ValueError("M must be 'cubic_root', 'linear', 'auto', 'plugin', or numeric.")
+
+        lag_ls = [np.arange(-(dim_i - 1), dim_i) for dim_i in dim]
+
+        weights_ls = [
+            kernel_weights(lag_ls[i], type=kernel, bandwidth=b_qs, M=M_tuple[i])
+            for i in range(n_dim)
+        ]
+        weights = reduce(np.multiply, np.ix_(*weights_ls))
+
+        # print(weights.shape)
+        # print(X_standard.mean())
+        # print(X_standard.std())
 
         # nansum drops lags with no valid pair under a mask (NaN from est_exp_X0Yh)
         omega = np.array([np.nansum(weights * cov) for cov in cov_ls]).reshape((3, 3))
-        vec = np.array([1, -0.5 * rho_plugin, -0.5 * rho_plugin])
         var = (vec @ omega @ vec) / n
         if se_method == "indep":
             var = factor * var
@@ -764,7 +868,7 @@ def get_se(
 
 
 
-def get_est_exp_ls(se_method, X_standard, Y_standard, mask=None):
+def get_est_exp_ls(se_method, X_standard, Y_standard, mask=None, impose_null=False):
     """
     Compute the lag-wise expectation estimates entering the HAC variance.
 
@@ -778,6 +882,10 @@ def get_est_exp_ls(se_method, X_standard, Y_standard, mask=None):
         The (optionally standardized) input fields, 0 outside `mask`.
     mask : ndarray of bool or None, optional (default=None)
         Valid grid points. If None, every grid point is valid.
+    impose_null : bool, optional (default=False)
+        Only used for 'gauss'. If True, set the lag-0 cross-correlation (which equals the sample
+        correlation) to 0, so that the null rho = 0 is imposed in the Gaussian covariance
+        structure as well (RFCorr-Gauss-0 in the paper).
 
     Returns
     -------
@@ -795,6 +903,13 @@ def get_est_exp_ls(se_method, X_standard, Y_standard, mask=None):
         else:
             rho_xy_h = est_exp_X0Yh(X_standard, Y_standard, mask=mask)
             rho_yx_h = est_exp_X0Yh(Y_standard, X_standard, mask=mask)
+            if impose_null:
+                # lag 0 sits at the center of the lag arrays; rho = 0 fixes only this entry
+                center = tuple(n - 1 for n in X_standard.shape)
+                rho_xy_h = rho_xy_h.copy()
+                rho_yx_h = rho_yx_h.copy()
+                rho_xy_h[center] = 0.0
+                rho_yx_h[center] = 0.0
         # order the matrix by row
         est_exp_ls = [
             rho_xx_h * rho_yy_h + rho_xy_h * rho_yx_h,
@@ -1010,6 +1125,8 @@ def sim_single(
     mask=None,
     mask_axes=None,
     fwhm_ratio=1,
+    dep_model=None,
+    dep_strength=1.0,
 ):
     """
     Run correlation estimation simulations for a single setting.
@@ -1060,6 +1177,11 @@ def sim_single(
         Ratio of the smoothing of the two independent fields generating X and Y (see
         `gen_corr_field`): the field entering only Y is smoothed with ``fwhm / fwhm_ratio``.
         With 1, X and Y have the same smoothness; with 2, Y is partly rougher.
+    dep_model : str or None, optional (default=None)
+        Dependence beyond correlation between X and Y: None, 'quad', or 'exp' (see
+        `gen_corr_field`). With rho = 0, X and Y are then uncorrelated but dependent.
+    dep_strength : float, optional (default=1.0)
+        Weight in [0, 1] of the dependent part (see `gen_corr_field`).
 
     Returns
     -------
@@ -1104,6 +1226,10 @@ def sim_single(
     mask_array = None if mask is None else gen_mask(dim, shape=mask, axes=mask_axes)
     if fwhm_ratio is None or (isinstance(fwhm_ratio, float) and np.isnan(fwhm_ratio)):
         fwhm_ratio = 1
+    if isinstance(dep_model, float) and np.isnan(dep_model):
+        dep_model = None
+    if dep_strength is None or (isinstance(dep_strength, float) and np.isnan(dep_strength)):
+        dep_strength = 1.0
     n_obs = np.prod(dim) if mask_array is None else mask_array.sum()
 
     # if M_trunc is None:
@@ -1128,6 +1254,8 @@ def sim_single(
             noise_df = noise_df,
             trans = trans,
             fwhm_ratio=fwhm_ratio,
+            dep_model=dep_model,
+            dep_strength=dep_strength,
         )
 
         # print('shape of X:', X.shape, 'shape of Y:', Y.shape)
@@ -1206,6 +1334,8 @@ def sim_single(
         # a list, so a tuple of axes is stored as one value per row
         mask_axes=[mask_axes] * len(results),
         n_obs=n_obs,
+        dep_model=dep_model,
+        dep_strength=dep_strength,
     )
     # join using the index of method_df
     results = results.join(method_df, on="method_id")
@@ -1222,8 +1352,8 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
     setting_df : pd.DataFrame
         Settings to iterate over with columns: rho, nx, n_dim, len_scale,
         gen_method, fwhm, distribution, noise_df, trans, and optionally mask,
-        mask_axes, and fwhm_ratio (see `sim_single`; without these columns no mask is used
-        and fwhm_ratio is 1).
+        mask_axes, fwhm_ratio, dep_model, and dep_strength (see `sim_single`; without these
+        columns no mask is used, fwhm_ratio is 1, and X, Y depend only through rho).
     method_df : pd.DataFrame
         Methods to compare with columns: use_true_rho, method, kernel, M, b_qs, constant.
     m_sim : int
@@ -1258,6 +1388,8 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
             mask=setting_df["mask"][i] if "mask" in setting_df else None,
             mask_axes=setting_df["mask_axes"][i] if "mask_axes" in setting_df else None,
             fwhm_ratio=setting_df["fwhm_ratio"][i] if "fwhm_ratio" in setting_df else 1,
+            dep_model=setting_df["dep_model"][i] if "dep_model" in setting_df else None,
+            dep_strength=setting_df["dep_strength"][i] if "dep_strength" in setting_df else 1.0,
         )
         results_single.insert(0, "setting_id", i)
         # results_single = results_single.assign(setting_id=i + 1)
