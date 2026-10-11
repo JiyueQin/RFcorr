@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import joblib
 import pandas as pd
@@ -14,7 +15,8 @@ import src
 setting_df = joblib.load(os.path.join(here, '../job_inputs/setting_df'))
 method_df = joblib.load(os.path.join(here, '../job_inputs/method_df'))
 
-rows = setting_df.iloc[0:20]
+# last 20 rows: the largest nx (300), to time the slowest settings
+rows = setting_df.iloc[-20:]
 m_sim = 2
 
 # Checkpoints: each setting's result is saved to its own file as soon as it finishes. If the job
@@ -36,8 +38,9 @@ for i in rows.index:
             results.append(ckpt['result'])
             continue
         print(f'----setting {i}: checkpoint is out of date, rerunning----')
-    # one-row table, so setting_id in the result is the row index i
     print(f'----setting {i}: running----')
+    start = time.time()
+    # one-row table, so setting_id in the result is the row index i
     result = src.sim_multiple(row, method_df, m_sim=m_sim, return_summary=False, verbose=False)
     # save the setting, method_df and m_sim with the result, so a rerun can check that the
     # checkpoint matches the current inputs. Write to a temporary file first, then rename it:
@@ -47,6 +50,7 @@ for i in rows.index:
     joblib.dump({'setting': row, 'method_df': method_df, 'm_sim': m_sim, 'result': result},
                 path + '.tmp')
     os.replace(path + '.tmp', path)
+    print(f'----setting {i}: done in {(time.time() - start) / 60:.1f} min----')
     results.append(result)
 
 result = pd.concat(results, ignore_index=True)
