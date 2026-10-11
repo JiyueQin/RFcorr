@@ -3,8 +3,9 @@ import numpy as np
 import gstools as gs
 import pandas as pd
 import warnings
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, gaussian_filter1d
 import sys
+import numbers
 
 
 def gen_field(
@@ -152,6 +153,48 @@ def gen_field(
         return X
 
 
+def gaussian_filter_acf(h, fwhm, truncate=4):
+    """
+    Population autocorrelation at lag h of a field from ``gen_field(method='gaussian_filter')``.
+
+    The field is i.i.d. noise convolved with a discrete Gaussian kernel K, so its correlation at
+    lag h is sum_u K(u) K(u + h) / sum_u K(u)^2, whatever the noise distribution. The kernel is a
+    product of 1D kernels, so the correlation is the product of the 1D correlations over axes.
+
+    Parameters
+    ----------
+    h : int or tuple of int
+        Lag. An int is a lag along a 1D axis.
+    fwhm : float
+        Full width at half maximum of the Gaussian kernel, as in `gen_field`.
+    truncate : float, optional (default=4)
+        Truncation of the kernel in standard deviations, as in `gen_field`.
+
+    Returns
+    -------
+    r : float
+        Correlation between the field at a site and at the site shifted by h.
+
+    Examples
+    --------
+    >>> round(gaussian_filter_acf((1, 0), fwhm=3), 3)
+    0.857
+    """
+    if isinstance(h, numbers.Integral):
+        h = (h,)
+    sigma = fwhm / np.sqrt(8 * np.log(2))
+    n = 2 * int(np.ceil(truncate * sigma)) + 2 * max(abs(int(x)) for x in h) + 3
+    impulse = np.zeros(n)
+    impulse[n // 2] = 1
+    # the 1D kernel used by gaussian_filter in gen_field
+    K = gaussian_filter1d(impulse, sigma, truncate=truncate)
+    r = 1.0
+    for lag in h:
+        lag = abs(int(lag))
+        r *= np.sum(K[: n - lag] * K[lag:]) / np.sum(K * K)
+    return r
+
+
 def gen_corr_field(
     rho,
     dim=(50, 50),
@@ -169,6 +212,7 @@ def gen_corr_field(
     trans = None,
     dep_model = None,
     dep_strength = 1.0,
+    shift_lag = 1,
 ):
     """
     Generate a pair of correlated random fields with optional truncation.
@@ -213,10 +257,28 @@ def gen_corr_field(
         U + W on U (slope 1).
         'exp': W = lam (exp(U) - e^(1/2) - e^(1/2) U) / sqrt(e (e - 2)) + sqrt(1 - lam^2) V,
         the residual of exp(U) on U (slope e^(1/2)) mixed with V.
-        So rho = 0 gives X and Y uncorrelated but dependent. Requires Gaussian U and trans=None.
+        'shift': W = lam D / sd(D) * sd(U) + sqrt(1 - lam^2) V, where
+        D_s = U_{s+h} - r_h U_s, h is ``shift_lag``, r_h = corr(U_s, U_{s+h}) is the population
+        lag-h correlation of U (from `gaussian_filter_acf`, squared for trans='square'), and sd(D)
+        is the population standard deviation of D. Then cov(U_s, D_s) = 0 exactly, while D is
+        correlated with U at other lags. Unlike 'quad' and 'exp', the dependence is linear in
+        U, so with trans=None and Gaussian noise X and Y are jointly Gaussian. Works with
+        trans=None (any noise distribution) or trans='square' (Gaussian noise, the chi^2_1
+        setting), and requires method='gaussian_filter'.
+        'symmetric_shift': as 'shift' with the symmetric D_s = (U_{s+h} + U_{s-h}) / 2 - r_h U_s,
+        whose variance is var(U) ((1 + r_2h) / 2 - r_h^2). Again cov(U_s, D_s) = 0, but the
+        cross-correlation of X and Y is even in the lag, so the cross term
+        sum_k rho_xy,k rho_xy,-k of the variance of the sample correlation is positive and tests
+        assuming independence (Clifford-type) are anti-conservative. With 'shift' the cross term
+        is negative and those tests are conservative.
+        So rho = 0 gives X and Y uncorrelated but dependent. 'quad' and 'exp' require Gaussian
+        U and trans=None.
     dep_strength : float, optional (default=1.0)
         Weight lam in [0, 1] of the dependent part of W; lam = 0 gives W = V (independence).
         Only used when ``dep_model`` is not None.
+    shift_lag : int or tuple of int, optional (default=1)
+        Lag h for ``dep_model='shift'`` or ``'symmetric_shift'``. An int k means a shift of k
+        grid points along the first axis. Only used for these two models.
 
     Returns
     -------
@@ -248,8 +310,23 @@ def gen_corr_field(
     # if seed = None, rng.integers will genereate a random number
     rng = np.random.default_rng(seed)
 
+    # for the shift designs, U is generated on a larger grid so that the shifted values exist at
+    # every site of the returned grid: by |h| on one side for 'shift' (U_{s+h}) and on both sides
+    # for 'symmetric_shift' (U_{s+h} and U_{s-h})
+    if dep_model in ("shift", "symmetric_shift"):
+        if isinstance(shift_lag, numbers.Integral):
+            h = (int(shift_lag),) + (0,) * (n_dim - 1)
+        else:
+            h = tuple(int(x) for x in shift_lag)
+        if len(h) != n_dim or all(x == 0 for x in h):
+            raise ValueError("shift_lag must be a nonzero lag with one entry per dimension")
+        n_sides = 1 if dep_model == "shift" else 2
+        dim_U = tuple(n + n_sides * abs(x) for n, x in zip(dim, h))
+    else:
+        dim_U = dim
+
     U = gen_field(
-        dim=dim,
+        dim=dim_U,
         var=var,
         len_scale=len_scale,
         seed=rng.integers(0, 1e9),
@@ -276,7 +353,48 @@ def gen_corr_field(
         noise_df = noise_df, 
         trans = trans
     )
-    if dep_model is not None:
+    if dep_model in ("shift", "symmetric_shift"):
+        # a missing value in a settings table (NaN) means no transformation
+        if isinstance(trans, float) and np.isnan(trans):
+            trans = None
+        if method != "gaussian_filter":
+            raise ValueError(f"dep_model='{dep_model}' requires method='gaussian_filter'")
+        if trans not in (None, "square"):
+            raise ValueError(f"dep_model='{dep_model}' requires trans=None or 'square'")
+        if trans == "square" and distribution != "gaussian":
+            raise ValueError(f"dep_model='{dep_model}' with trans='square' requires Gaussian noise")
+        lam = dep_strength
+        # population variance and autocorrelations of U at lags h and 2h; for U = Z^2 with
+        # Gaussian Z, var(U) = 2 var^2 and corr(Z_0^2, Z_k^2) = r_k^2
+        r_h = gaussian_filter_acf(h, fwhm, truncate)
+        r_2h = gaussian_filter_acf(tuple(2 * x for x in h), fwhm, truncate)
+        if trans == "square":
+            var_U, r_U, r_U2 = 2 * var**2, r_h**2, r_2h**2
+        else:
+            var_U, r_U, r_U2 = var, r_h, r_2h
+        # the population r_U makes cov(U_s, D_s) = 0 exactly; an estimate from the sample
+        # would force the sample correlation towards 0
+        if dep_model == "shift":
+            # D_s = U_{s+h} - r U_s; base sites s and shifted sites s + h inside the enlarged
+            # grid (handles negative lags)
+            off = [max(0, -x) for x in h]
+            base = tuple(slice(o, o + n) for o, n in zip(off, dim))
+            shifted = tuple(slice(o + x, o + x + n) for o, x, n in zip(off, h, dim))
+            D = U[shifted] - r_U * U[base]
+            var_D = var_U * (1 - r_U**2)
+        else:
+            # D_s = (U_{s+h} + U_{s-h}) / 2 - r U_s, symmetric in the lag
+            off = [abs(x) for x in h]
+            base = tuple(slice(o, o + n) for o, n in zip(off, dim))
+            plus = tuple(slice(o + x, o + x + n) for o, x, n in zip(off, h, dim))
+            minus = tuple(slice(o - x, o - x + n) for o, x, n in zip(off, h, dim))
+            D = (U[plus] + U[minus]) / 2 - r_U * U[base]
+            var_D = var_U * ((1 + r_U2) / 2 - r_U**2)
+        U = U[base]
+        # D rescaled to the variance of U; V has the same variance as U, so W does too
+        W = lam * D * np.sqrt(var_U / var_D)
+        V = W + np.sqrt(max(0.0, 1.0 - lam**2)) * V
+    elif dep_model is not None:
         if distribution != "gaussian" or trans is not None:
             raise ValueError("dep_model requires distribution='gaussian' and trans=None")
         # population moments below are for standard normal U, V
@@ -289,7 +407,7 @@ def gen_corr_field(
             e = np.exp(1)
             W = lam * (np.exp(U_std) - np.sqrt(e) - np.sqrt(e) * U_std) / np.sqrt(e * (e - 2))
         else:
-            raise ValueError("dep_model must be None, 'quad', or 'exp'")
+            raise ValueError("dep_model must be None, 'quad', 'exp', 'shift', or 'symmetric_shift'")
         # unit-variance residual, uncorrelated with U but dependent on it when lam > 0
         V = (W + np.sqrt(max(0.0, 1.0 - lam**2)) * V_std) * sd
 
@@ -1127,6 +1245,7 @@ def sim_single(
     fwhm_ratio=1,
     dep_model=None,
     dep_strength=1.0,
+    shift_lag=1,
 ):
     """
     Run correlation estimation simulations for a single setting.
@@ -1178,10 +1297,13 @@ def sim_single(
         `gen_corr_field`): the field entering only Y is smoothed with ``fwhm / fwhm_ratio``.
         With 1, X and Y have the same smoothness; with 2, Y is partly rougher.
     dep_model : str or None, optional (default=None)
-        Dependence beyond correlation between X and Y: None, 'quad', or 'exp' (see
-        `gen_corr_field`). With rho = 0, X and Y are then uncorrelated but dependent.
+        Dependence beyond correlation between X and Y: None, 'quad', 'exp', 'shift', or
+        'symmetric_shift' (see `gen_corr_field`). With rho = 0, X and Y are then uncorrelated but
+        dependent.
     dep_strength : float, optional (default=1.0)
         Weight in [0, 1] of the dependent part (see `gen_corr_field`).
+    shift_lag : int or tuple of int, optional (default=1)
+        Lag of the shift for dep_model='shift' or 'symmetric_shift' (see `gen_corr_field`).
 
     Returns
     -------
@@ -1230,7 +1352,11 @@ def sim_single(
         dep_model = None
     if dep_strength is None or (isinstance(dep_strength, float) and np.isnan(dep_strength)):
         dep_strength = 1.0
-    n_obs = np.prod(dim) if mask_array is None else mask_array.sum()
+    if shift_lag is None or (isinstance(shift_lag, float) and np.isnan(shift_lag)):
+        shift_lag = 1
+    if isinstance(shift_lag, float):
+        shift_lag = int(shift_lag)
+    n_obs =np.prod(dim) if mask_array is None else mask_array.sum()
 
     # if M_trunc is None:
     #     rho_final = rho
@@ -1256,6 +1382,7 @@ def sim_single(
             fwhm_ratio=fwhm_ratio,
             dep_model=dep_model,
             dep_strength=dep_strength,
+            shift_lag=shift_lag,
         )
 
         # print('shape of X:', X.shape, 'shape of Y:', Y.shape)
@@ -1336,6 +1463,8 @@ def sim_single(
         n_obs=n_obs,
         dep_model=dep_model,
         dep_strength=dep_strength,
+        # a list, so a tuple lag is stored as one value per row
+        shift_lag=[shift_lag] * len(results),
     )
     # join using the index of method_df
     results = results.join(method_df, on="method_id")
@@ -1343,7 +1472,7 @@ def sim_single(
     return results
 
 
-def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
+def sim_multiple(setting_df, method_df, m_sim, return_summary=False, verbose=True):
     """
     Run correlation estimation simulations for multiple settings.
 
@@ -1352,14 +1481,16 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
     setting_df : pd.DataFrame
         Settings to iterate over with columns: rho, nx, n_dim, len_scale,
         gen_method, fwhm, distribution, noise_df, trans, and optionally mask,
-        mask_axes, fwhm_ratio, dep_model, and dep_strength (see `sim_single`; without these
-        columns no mask is used, fwhm_ratio is 1, and X, Y depend only through rho).
+        mask_axes, fwhm_ratio, dep_model, dep_strength, and shift_lag (see `sim_single`; without
+        these columns no mask is used, fwhm_ratio is 1, and X, Y depend only through rho).
     method_df : pd.DataFrame
         Methods to compare with columns: use_true_rho, method, kernel, M, b_qs, constant.
     m_sim : int
         Number of simulations per setting.
     return_summary : bool, optional (default=False)
         If True, returns summarized results.
+    verbose : bool, optional (default=True)
+        If True, prints a progress message before each setting.
 
     Returns
     -------
@@ -1369,9 +1500,10 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
     """
     results = []
     for i in setting_df.index:
-        print(
-            f"----performing simulation, current setting number: {i + 1}, remaining settings: {setting_df.shape[0] - i - 1}----"
-        )
+        if verbose:
+            print(
+                f"----performing simulation, current setting number: {i + 1}, remaining settings: {setting_df.shape[0] - i - 1}----"
+            )
         results_single = sim_single(
             method_df,
             rho=setting_df["rho"][i],
@@ -1390,12 +1522,114 @@ def sim_multiple(setting_df, method_df, m_sim, return_summary=False):
             fwhm_ratio=setting_df["fwhm_ratio"][i] if "fwhm_ratio" in setting_df else 1,
             dep_model=setting_df["dep_model"][i] if "dep_model" in setting_df else None,
             dep_strength=setting_df["dep_strength"][i] if "dep_strength" in setting_df else 1.0,
+            shift_lag=setting_df["shift_lag"][i] if "shift_lag" in setting_df else 1,
         )
         results_single.insert(0, "setting_id", i)
         # results_single = results_single.assign(setting_id=i + 1)
         results.append(results_single)
     results = pd.concat(results, ignore_index=True)
     return results
+
+
+# dependence designs that are only meaningful with rho = 0 (see gen_corr_field)
+RHO_ZERO_DEP_MODELS = ("shift", "symmetric_shift")
+
+
+def make_setting_df(
+    nx,
+    rho,
+    fwhm,
+    n_dim=(2,),
+    len_scale=(None,),
+    gen_method=("gaussian_filter",),
+    distribution=("gaussian",),
+    noise_df=(None,),
+    trans=(None,),
+    mask=((None, None),),
+    fwhm_ratio=(1,),
+    dep=((None, None),),
+):
+    """
+    Build the table of simulation settings for `sim_multiple`, one row per combination.
+
+    Every argument is a list of values to cross. The settings table has one row for each
+    combination, except that the dependence designs in RHO_ZERO_DEP_MODELS are kept only with
+    rho = 0, since they make X and Y uncorrelated but dependent.
+
+    Parameters
+    ----------
+    nx, rho, fwhm : list
+        Side lengths, true correlations, and FWHMs of the smoothing kernel.
+    n_dim, len_scale, gen_method, distribution, noise_df, trans, fwhm_ratio : list, optional
+        Further settings passed to `sim_single` (see there); the defaults are single values.
+    mask : list of tuple, optional (default=[(None, None)])
+        Pairs (mask, mask_axes), e.g. ('ellipse', (1, 0.8)); (None, None) means no mask.
+    dep : list of tuple, optional (default=[(None, None)])
+        Pairs (dep_model, shift_lag), e.g. ('shift', 1) or ('symmetric_shift', 1);
+        (None, None) means X and Y depend only through rho.
+
+    Returns
+    -------
+    setting_df : pd.DataFrame
+        Columns nx, n_dim, rho, len_scale, fwhm, gen_method, distribution, noise_df, trans,
+        fwhm_ratio, mask, mask_axes, dep_model, shift_lag, with rows numbered from 0.
+
+    Examples
+    --------
+    >>> setting_df = make_setting_df(nx=[25, 50], rho=[0, 0.4], fwhm=[2, 3],
+    ...                              trans=[None, 'square'], dep=[(None, None), ('shift', 1)])
+    """
+    from itertools import product
+
+    columns = ["nx", "n_dim", "rho", "len_scale", "fwhm", "gen_method", "distribution",
+               "noise_df", "trans", "mask_spec", "fwhm_ratio", "dep_spec"]
+    setting_df = pd.DataFrame(
+        product(nx, n_dim, rho, len_scale, fwhm, gen_method, distribution, noise_df, trans,
+                mask, fwhm_ratio, dep),
+        columns=columns,
+    )
+    setting_df[["mask", "mask_axes"]] = pd.DataFrame(
+        setting_df.pop("mask_spec").tolist(), index=setting_df.index)
+    setting_df[["dep_model", "shift_lag"]] = pd.DataFrame(
+        setting_df.pop("dep_spec").tolist(), index=setting_df.index)
+    # the rho = 0 designs: keep all rho for rows without such a design, rho = 0 for the rest
+    keep = ~setting_df["dep_model"].isin(RHO_ZERO_DEP_MODELS) | (setting_df["rho"] == 0)
+    return setting_df[keep].reset_index(drop=True)
+
+
+def make_method_df(
+    method=("general", "gauss", "indep", "iid"),
+    M=("auto",),
+    kernel=("bartlett",),
+    use_true_rho=(False,),
+    b_qs=(None,),
+    constant=(1,),
+):
+    """
+    Build the table of standard error methods for `sim_multiple`, one row per combination.
+
+    Parameters
+    ----------
+    method : list, optional (default=['general', 'gauss', 'indep', 'iid'])
+        Standard error methods (see SE_METHODS).
+    M : list, optional (default=['auto'])
+        Lag truncation rules, e.g. 'auto' or 'plugin' (see `get_se`).
+    kernel, use_true_rho, b_qs, constant : list, optional
+        Further method settings (see `corr`); the defaults are single values.
+
+    Returns
+    -------
+    method_df : pd.DataFrame
+        Columns use_true_rho, method, kernel, M, b_qs, constant, with rows numbered from 0.
+    """
+    from itertools import product
+
+    for m in method:
+        canonical_se_method(m)  # fail early on an unknown method name
+    return pd.DataFrame(
+        product(use_true_rho, method, kernel, M, b_qs, constant),
+        columns=["use_true_rho", "method", "kernel", "M", "b_qs", "constant"],
+    )
 
 
 # def mean(

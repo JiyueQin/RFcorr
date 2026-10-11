@@ -107,6 +107,107 @@ def test_gen_corr_field_truncation_and_coordinates():
 
 
 # ---------------------------------------------------------------------------
+# gaussian_filter_acf and the shift design (uncorrelated but dependent fields)
+# ---------------------------------------------------------------------------
+def test_gaussian_filter_acf_values():
+    r = [src.gaussian_filter_acf((1, 0), f) for f in [1, 2, 3, 4]]
+    np.testing.assert_allclose(r, [0.124, 0.705, 0.857, 0.917], atol=1e-3)
+    assert src.gaussian_filter_acf((0, 0), 3) == pytest.approx(1.0)
+    # symmetric in the lag, and separable across axes
+    assert src.gaussian_filter_acf((-1, 0), 3) == pytest.approx(src.gaussian_filter_acf((1, 0), 3))
+    assert src.gaussian_filter_acf((1, 1), 3) == pytest.approx(src.gaussian_filter_acf(1, 3) ** 2)
+
+
+def test_gaussian_filter_acf_matches_simulated_fields():
+    Z = src.gen_field(dim=(300, 300), method="gaussian_filter", fwhm=3, seed=0)
+    for h, (a, b) in {(1, 0): (Z[:-1], Z[1:]), (0, 2): (Z[:, :-2], Z[:, 2:])}.items():
+        assert np.corrcoef(a.ravel(), b.ravel())[0, 1] == pytest.approx(
+            src.gaussian_filter_acf(h, 3), abs=0.02)
+
+
+SHIFT_MODELS = ["shift", "symmetric_shift"]
+
+
+def _mean_corr(rho, trans, dep_model="shift", m=150, n=40, **kw):
+    return np.mean([
+        np.corrcoef(*[f.ravel() for f in src.gen_corr_field(
+            rho, dim=(n, n), fwhm=3, fwhm_ratio=2, seed=s, trans=trans, dep_model=dep_model,
+            **kw)])[0, 1]
+        for s in range(m)
+    ])
+
+
+@pytest.mark.parametrize("dep_model", SHIFT_MODELS)
+@pytest.mark.parametrize("trans", [None, "square"])
+@pytest.mark.parametrize("rho", [0.0, 0.4])
+def test_shift_design_keeps_target_correlation(rho, trans, dep_model):
+    # the population r_h (and r_2h) make the correlation exactly rho, in both settings
+    assert _mean_corr(rho, trans, dep_model) == pytest.approx(rho, abs=0.015)
+
+
+@pytest.mark.parametrize("trans", [None, "square"])
+def test_symmetric_shift_cross_correlation(trans):
+    # with rho = 0, corr(X_s, Y_{s+h}) = sd(D) / sd(U) = sqrt((1 + r_2h) / 2 - r_h^2), and the
+    # cross-correlation is even in the lag: corr(X_s, Y_{s-h}) is the same
+    r, r2 = src.gaussian_filter_acf((1, 0), 3), src.gaussian_filter_acf((2, 0), 3)
+    if trans == "square":
+        r, r2 = r**2, r2**2
+    plus, minus = [], []
+    for s in range(50):
+        X, Y = src.gen_corr_field(0, dim=(60, 60), fwhm=3, seed=s, trans=trans,
+                                  dep_model="symmetric_shift")
+        plus.append(np.corrcoef(X[:-1].ravel(), Y[1:].ravel())[0, 1])    # (X_s, Y_{s+h})
+        minus.append(np.corrcoef(X[1:].ravel(), Y[:-1].ravel())[0, 1])   # (X_s, Y_{s-h})
+    expected = np.sqrt((1 + r2) / 2 - r**2)
+    assert np.mean(plus) == pytest.approx(expected, abs=0.03)
+    assert np.mean(minus) == pytest.approx(expected, abs=0.03)
+
+
+@pytest.mark.parametrize("trans", [None, "square"])
+def test_shift_design_is_dependent(trans):
+    # with rho = 0, Y_{s-h} contains U_s, so it is strongly correlated with X_s
+    r = src.gaussian_filter_acf((1, 0), 3)
+    r_U = r if trans is None else r**2
+    vals = []
+    for s in range(50):
+        X, Y = src.gen_corr_field(0, dim=(60, 60), fwhm=3, seed=s, trans=trans, dep_model="shift")
+        vals.append(np.corrcoef(X[1:].ravel(), Y[:-1].ravel())[0, 1])
+    assert np.mean(vals) == pytest.approx(np.sqrt(1 - r_U**2), abs=0.03)
+
+
+@pytest.mark.parametrize("dep_model", SHIFT_MODELS)
+def test_shift_design_is_not_degenerate(dep_model):
+    # unlike a central difference, the sample correlation keeps the usual sqrt(N) scaling
+    sd_scaled = []
+    for n in [30, 60]:
+        rhos = [np.corrcoef(*[f.ravel() for f in src.gen_corr_field(
+            0, dim=(n, n), fwhm=3, seed=s, dep_model=dep_model)])[0, 1] for s in range(200)]
+        sd_scaled.append(np.std(rhos) * n)
+    assert sd_scaled[0] > 0.5
+    assert sd_scaled[1] / sd_scaled[0] == pytest.approx(1, abs=0.3)
+
+
+@pytest.mark.parametrize("dep_model", SHIFT_MODELS)
+@pytest.mark.parametrize("lag, dim", [(2, (20, 25)), ((0, -1), (20, 25)), ((1, 1), (20, 25)), (1, 30)])
+def test_shift_design_lags_and_shapes(lag, dim, dep_model):
+    X, Y = src.gen_corr_field(0.3, dim=dim, fwhm=2, seed=0, dep_model=dep_model, shift_lag=lag)
+    expected = (dim,) if isinstance(dim, int) else dim
+    assert X.shape == Y.shape == expected
+
+
+@pytest.mark.parametrize("dep_model", SHIFT_MODELS)
+def test_shift_design_invalid_settings(dep_model):
+    with pytest.raises(ValueError):
+        src.gen_corr_field(0, dim=(20, 20), method="iid", dep_model=dep_model)
+    with pytest.raises(ValueError):
+        src.gen_corr_field(0, dim=(20, 20), distribution="t", trans="square", dep_model=dep_model)
+    with pytest.raises(ValueError):
+        src.gen_corr_field(0, dim=(20, 20), dep_model=dep_model, shift_lag=0)
+    with pytest.raises(ValueError):
+        src.gen_corr_field(0, dim=(20, 20), dep_model=dep_model, shift_lag=(1, 0, 0))
+
+
+# ---------------------------------------------------------------------------
 # est_exp_X0Yh
 # ---------------------------------------------------------------------------
 def _brute_force_lag_mean(X, Y):
@@ -562,6 +663,9 @@ def test_sim_multiple(method_df, capsys):
     assert len(out) == len(setting_df) * len(method_df)
     assert list(out.groupby("setting_id")["rho"].first()) == [0.0, 0.5]
     assert "remaining settings" in capsys.readouterr().out
+    # verbose=False prints nothing
+    src.sim_multiple(setting_df, method_df, m_sim=2, verbose=False)
+    assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +751,69 @@ def test_sim_multiple_fwhm_ratio_column(method_df):
     # without the column, the ratio is 1
     out1 = src.sim_multiple(setting_df.drop(columns="fwhm_ratio"), method_df, m_sim=2)
     assert (out1["fwhm_ratio"] == 1).all()
+
+
+def test_make_setting_df_columns_and_rho_filter():
+    df = src.make_setting_df(nx=[20, 40], rho=[0, 0.4, -0.9], fwhm=[2, 3],
+                             trans=[None, "square"], mask=[("ellipse", (1, 0.8))],
+                             fwhm_ratio=[2], dep=[(None, None), ("shift", 1),
+                                                  ("symmetric_shift", 1)])
+    assert list(df.columns) == ["nx", "n_dim", "rho", "len_scale", "fwhm", "gen_method",
+                                "distribution", "noise_df", "trans", "fwhm_ratio", "mask",
+                                "mask_axes", "dep_model", "shift_lag"]
+    # without a design: every rho; with a rho = 0 design: rho = 0 only
+    base = 2 * 2 * 2  # nx x fwhm x trans
+    assert len(df) == base * 3 + base * 1 * 2
+    assert set(df.loc[df["dep_model"].isna(), "rho"]) == {0, 0.4, -0.9}
+    assert set(df.loc[df["dep_model"].notna(), "rho"]) == {0}
+    assert list(df.index) == list(range(len(df)))
+    assert (df["mask"] == "ellipse").all() and all(a == (1, 0.8) for a in df["mask_axes"])
+
+
+def test_make_setting_df_defaults_and_matches_notebook_construction():
+    from itertools import product
+    nx, rho, fwhm = [25, 50], [0, 0.4], [1, 2]
+    df = src.make_setting_df(nx=nx, rho=rho, fwhm=fwhm)
+    # the construction previously written out in main.ipynb
+    ref = pd.DataFrame(product(nx, [2], rho, [None], fwhm, ["gaussian_filter"], ["gaussian"], [None],
+                               [None], [(None, None)], [1], [(None, None)]),
+                       columns=["nx", "n_dim", "rho", "len_scale", "fwhm", "gen_method",
+                                "distribution", "noise_df", "trans", "mask_spec", "fwhm_ratio",
+                                "dep_spec"])
+    ref[["mask", "mask_axes"]] = pd.DataFrame(ref.pop("mask_spec").tolist(), index=ref.index)
+    ref[["dep_model", "shift_lag"]] = pd.DataFrame(ref.pop("dep_spec").tolist(), index=ref.index)
+    pd.testing.assert_frame_equal(df, ref)
+
+
+def test_make_method_df():
+    df = src.make_method_df(M=["auto", "plugin"])
+    assert list(df.columns) == ["use_true_rho", "method", "kernel", "M", "b_qs", "constant"]
+    assert len(df) == 4 * 2
+    assert list(df["method"].unique()) == ["general", "gauss", "indep", "iid"]
+    with pytest.raises(ValueError):
+        src.make_method_df(method=["bartlett"])
+
+
+def test_make_setting_and_method_df_run_in_sim_multiple():
+    setting_df = src.make_setting_df(nx=[15], rho=[0, 0.4], fwhm=[2], trans=[None, "square"],
+                                     dep=[(None, None), ("symmetric_shift", 1)])
+    method_df = src.make_method_df(method=["general", "indep"])
+    out = src.sim_multiple(setting_df, method_df, m_sim=2, return_summary=True)
+    assert out["setting_id"].nunique() == len(setting_df)
+    assert len(out) == len(setting_df) * len(method_df)
+
+
+def test_sim_multiple_shift_design_columns(method_df):
+    setting_df = pd.DataFrame({
+        "rho": [0.0, 0.0, 0.0], "nx": [15, 15, 15], "n_dim": [2, 2, 2], "len_scale": [None] * 3,
+        "gen_method": ["gaussian_filter"] * 3, "fwhm": [3, 3, 3],
+        "distribution": ["gaussian"] * 3, "noise_df": [None] * 3, "trans": [None, None, "square"],
+        "dep_model": [None, "shift", "symmetric_shift"], "shift_lag": [None, 1, 2],
+    })
+    out = src.sim_multiple(setting_df, method_df, m_sim=2, return_summary=True)
+    first = out.groupby("setting_id").first()
+    assert list(first["dep_model"].fillna("none")) == ["none", "shift", "symmetric_shift"]
+    assert list(first["shift_lag"]) == [1, 1, 2]
 
 
 # ---------------------------------------------------------------------------
