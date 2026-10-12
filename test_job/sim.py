@@ -50,7 +50,7 @@ for i in rows.index:
     joblib.dump({'setting': row, 'method_df': method_df, 'm_sim': m_sim, 'result': result},
                 path + '.tmp')
     os.replace(path + '.tmp', path)
-    print(f'----setting {i}: done in {(time.time() - start) / 60:.1f} min----')
+    print(f'----setting {i}: done in {time.time() - start:.0f} s----')
     results.append(result)
 
 result = pd.concat(results, ignore_index=True)

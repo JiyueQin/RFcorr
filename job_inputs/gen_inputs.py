@@ -1,7 +1,7 @@
 """Create the simulation settings and methods for server jobs.
 
 Saves `setting_df` and `method_df` (joblib) next to this script. Jobs load them and run
-`src.sim_multiple` on a subset of the rows (see test_job/sim.py). The tables are built with
+`src.sim_multiple` on a subset of the rows (see test_job/sim.py, or array_job/ to split the rows across a job array). The tables are built with
 `src.make_setting_df` and `src.make_method_df`, the same functions used in main.ipynb, so a
 server run and a notebook run with the same values give the same settings.
 """
