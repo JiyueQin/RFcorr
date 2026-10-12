@@ -4,3 +4,4 @@ scipy==1.18.1
 pandas==3.0.6
 joblib==1.6.0
 gstools==1.7.0
+openpyxl==3.1.5
