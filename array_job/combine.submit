@@ -1,0 +1,15 @@
+#!/bin/bash
+#SBATCH --job-name='corr_combine'
+#SBATCH --output='out_combine.%j'
+#SBATCH --partition=shared
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+# all results are held in memory at once (about 896 settings x 4 methods x m_sim rows)
+#SBATCH --mem=16G
+#SBATCH --account=csd864
+#SBATCH --export=ALL
+#SBATCH -t 1:00:00
+source ~/.bashrc
+conda activate corr
+# working directory is where you run the command
+python -u combine_and_summarize.py
