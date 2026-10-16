@@ -149,8 +149,7 @@ for (dist in intersect(c('gaussian', 'chisq1'), unique(sim_all_plot$distribution
     p = plot_by_method(sim_all_plot, distribution = dist, dep_model = dep, caption = TRUE,
                        method_labels = labels_ci)
     print(p)
-    ggsave(glue('coverage_{sim_name}_by_method_{dist}{dep_tag(dep)}.jpg'), plot = p,
-           width = 8, height = 6)
+    ggsave(glue('coverage_{sim_name}_by_method_{dist}{dep_tag(dep)}.jpg'), plot = p, width = 8, height = 6)
   }
 }
 
