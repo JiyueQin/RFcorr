@@ -662,7 +662,7 @@ def corr(
         Standard error method: 'general', 'gauss', 'indep', or 'iid' (see
         SE_METHODS). The earlier names 'hac', 'hac_gaussian', and 'huristic' are also accepted.
     kernel : str, optional (default="bartlett")
-        Kernel type for HAC: 'bartlett', 'qs', or 'constant'.
+        Kernel type for HAC: 'bartlett', 'qs', 'constant', or 'bartlett_radial' (see `get_se`).
     check : bool, optional (default=False)
         If True, print diagnostic information.
     b_qs : float, optional (default=5)
@@ -864,7 +864,9 @@ def get_se(
         Standard error method: 'general', 'gauss', 'indep', or 'iid' (see
         SE_METHODS). The earlier names 'hac', 'hac_gaussian', and 'huristic' are also accepted.
     kernel : str, optional (default="bartlett")
-        Kernel type for HAC weighting: 'bartlett', 'qs', or 'constant'.
+        Kernel type for HAC weighting: 'bartlett', 'qs', or 'constant' (products of 1D weights
+        over axes), or 'bartlett_radial', the radial Bartlett weights 1 - ||h / (M + 1)|| (with
+        lags scaled per axis), as in Kim and Sun (2011).
     check : bool, optional (default=False)
         If True, print diagnostic information (omega and weights).
     b_qs : float, optional (default=5)
@@ -939,11 +941,18 @@ def get_se(
 
         lag_ls = [np.arange(-(dim_i - 1), dim_i) for dim_i in dim]
 
-        weights_ls = [
-            kernel_weights(lag_ls[i], type=kernel, bandwidth=b_qs, M=M_tuple[i])
-            for i in range(n_dim)
-        ]
-        weights = reduce(np.multiply, np.ix_(*weights_ls))
+        if kernel == "bartlett_radial":
+            # radial Bartlett weights 1 - ||h / (M + 1)||, with lags scaled per axis as in the
+            # product weights, so that the same M gives the same reach along each axis
+            scaled = np.meshgrid(*[lag_ls[i] / (M_tuple[i] + 1) for i in range(n_dim)],
+                                 indexing="ij")
+            weights = np.maximum(0.0, 1 - np.sqrt(sum(s**2 for s in scaled)))
+        else:
+            weights_ls = [
+                kernel_weights(lag_ls[i], type=kernel, bandwidth=b_qs, M=M_tuple[i])
+                for i in range(n_dim)
+            ]
+            weights = reduce(np.multiply, np.ix_(*weights_ls))
 
         # print(weights.shape)
         # print(X_standard.mean())

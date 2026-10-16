@@ -1,0 +1,248 @@
+---
+title: "plot_sim_results"
+author: "JiyueQin"
+date: "2025-10-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+library(knitr)
+library(tidyverse)
+library(readxl)
+library(ggsci)
+library(glue)
+theme_set(theme_bw() + theme(legend.position = 'bottom'))
+```
+
+
+
+```{r}
+# server job array run (see array_job/combine_and_summarize.py); overrides the file above.
+# sim_name is only used to name the saved figures here
+sim_name = '2d_expanse_m1000'
+file ='C:/Users/jiyue/OneDrive - UC San Diego/python_projects/corr/array_job/sim_summary.xlsx'
+
+sim_all_raw = read_xlsx(file)
+
+
+sim_all = sim_all_raw %>% 
+  mutate(rho_plot = paste0('rho==', rho)) %>% 
+  mutate(M_method_plot = recode(M, 'cubic_root' = 'n^0.3', 'linear' = '0.2n', 
+                                'auto' = 'n^(d/d+2)')) %>% 
+  mutate(constant_fct = as.factor(constant)) %>% 
+  mutate(distribution = ifelse(distribution == 'gaussian'& trans %in% 'square',
+                               'chisq1', distribution)) %>%
+  # earlier method codes, renamed in src.py, mapped to the current ones
+  mutate(method = recode(method, hac = 'general', hac_gaussian = 'gauss', huristic = 'indep')) %>%
+  # legend order as in the paper; any other method codes follow these
+  mutate(method = fct_relevel(factor(method),
+                              intersect(c('general', 'gauss', 'indep', 'iid'), unique(method))))
+
+# number of observed points: n_obs is recorded for runs with a mask; older runs use the full grid
+if (!'n_obs' %in% names(sim_all)) sim_all$n_obs = NA_real_
+sim_all = sim_all %>% mutate(n_obs = coalesce(n_obs, nx^n_dim))
+
+# x axis for plots against the number of points, on a log scale since n_obs grows like nx^d
+x_lab_n = 'Number of points (N)'
+scale_x_n = scale_x_log10(labels = scales::label_comma())
+```
+
+```{r}
+# number of replications per setting, from the m_sim column of the results
+n_sim = unique(sim_all$m_sim)
+if (length(n_sim) != 1) stop('settings use different m_sim values: ', paste(n_sim, collapse = ', '))
+alpha = 0.05
+se = sqrt(alpha*(1-alpha)/n_sim)
+```
+
+
+```{r}
+# plot a summary measure against the number of points, one colour per method
+# facets: any facet_grid formula, e.g. rho_plot ~ fwhm, fwhm ~ distribution, ~ fwhm
+# y, target, ylab: e.g. y = power, target = alpha, ylab = 'Type I error rate' for type I error
+# method_labels: named vector mapping method codes to legend names, e.g. labels_ci below
+# linetype: optional column for line types, e.g. linetype = M_method_plot to compare bandwidths,
+#   with linetype_name as its legend title
+# caption: if TRUE, shows the dimension, distribution and dependence design (dep_model) in the data
+# distribution: optional subset, e.g. 'gaussian', 'chisq1' or c('gaussian', 'chisq1');
+#   NULL (default) keeps all distributions in the data
+# dep_model: optional subset of dependence designs, e.g. 'shift', 'symmetric_shift', or 'none'
+#   for rows without a design (missing dep_model); NULL (default) keeps all designs
+plot_by_method = function(data, facets = rho_plot ~ fwhm, y = cover_rate, target = 1 - alpha,
+                          ylab = 'Coverage rate', caption = FALSE, method_labels = waiver(),
+                          linetype = NULL, linetype_name = 'Bandwidth', distribution = NULL,
+                          dep_model = NULL){
+  # a missing dep_model (or no dep_model column) means X and Y depend only through rho
+  dep_of = function(d) {
+    if ('dep_model' %in% names(d)) coalesce(as.character(d$dep_model), 'none') else rep('none', nrow(d))
+  }
+  if (!is.null(distribution)) {
+    # .data is the column and .env the argument, which have the same name
+    data = data %>% filter(.data$distribution %in% .env$distribution)
+    if (nrow(data) == 0) stop('no rows with distribution ', paste(distribution, collapse = ', '))
+  }
+  if (!is.null(dep_model)) {
+    data = data[dep_of(data) %in% dep_model, , drop = FALSE]
+    if (nrow(data) == 0) stop('no rows with dep_model ', paste(dep_model, collapse = ', '))
+  }
+  # 95% Monte Carlo band around the nominal level
+  half_width = 1.96 * sqrt(target * (1 - target) / n_sim)
+  if (caption) {
+    dep = unique(dep_of(data))
+    caption = glue('# dimension: {paste(unique(data$n_dim), collapse = ", ")}, ',
+                   'distribution: {paste(unique(data$distribution), collapse = ", ")}, ',
+                   'dependence design: {paste(dep, collapse = ", ")}')
+  } else {
+    caption = NULL
+  }
+  facet_labeller = labeller(
+    rho_plot = label_parsed,
+    fwhm = as_labeller(function(x) paste0('FWHM = ', x)),
+    distribution = as_labeller(c(gaussian = 'Gaussian', chisq1 = 'chi[1]^2'), default = label_parsed),
+    .default = label_both)
+  data %>%
+    ggplot(aes(x = n_obs, y = {{ y }}, color = method, linetype = {{ linetype }})) +
+    geom_hline(yintercept = target, linetype = 'dashed') +
+    geom_hline(yintercept = target + half_width, linetype = 'dashed', color = 'darkgray') +
+    geom_hline(yintercept = target - half_width, linetype = 'dashed', color = 'darkgray') +
+    geom_line(linewidth = 0.6) +
+    geom_point(size = 1.4) +
+    facet_grid(facets, labeller = facet_labeller) +
+    # fixed colour per method (method_colors), so a method keeps its colour when others are
+    # filtered out of a plot
+    scale_color_manual(name = 'Method', values = method_colors, labels = method_labels) +
+    scale_x_log10(labels = scales::label_number(scale_cut = scales::cut_short_scale())) +
+    labs(x = x_lab_n, y = ylab, caption = caption, linetype = linetype_name) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = 'bottom',
+          panel.grid.minor = element_blank())
+}
+
+# legend names matching the method names in the paper (check against the code's method codes):
+# labels_ci for confidence intervals (coverage), labels_test for tests (Type I error, power)
+labels_ci = c(general = 'RFCorr', gauss = 'RFCorr-Gauss', indep = 'RFCorr-Indep', iid = 'naive')
+# colour of each method in every figure, the first four d3 colours in the paper's method order,
+# so the naive method (iid) is always red even when another method is left out of a plot
+method_colors = setNames(pal_d3()(4), c('general', 'gauss', 'indep', 'iid'))
+labels_test = c(general = 'RFCorr-0', gauss = 'RFCorr-Gauss-0', indep = 'RFCorr-Indep',
+                iid = 'naive')
+```
+
+```{r}
+# coverage colored by method, fixed bandwidth rule, one figure per distribution and design
+sim_all_plot = sim_all %>% filter(M == 'auto')
+# design of each row; a missing dep_model (or no dep_model column) means no design ('none')
+dep_col = if ('dep_model' %in% names(sim_all_plot)) {
+  coalesce(as.character(sim_all_plot$dep_model), 'none')
+} else {
+  rep('none', nrow(sim_all_plot))
+}
+# file-name tag for each design; no tag without a design, any other design is tagged by its name
+dep_tags = c(none = '', shift = '_shift', symmetric_shift = '_symmetric')
+dep_tag = function(dep) if (dep %in% names(dep_tags)) dep_tags[[dep]] else paste0('_', dep)
+
+for (dist in intersect(c('gaussian', 'chisq1'), unique(sim_all_plot$distribution))) {
+  for (dep in unique(dep_col)) {
+    # skip combinations with no rows (e.g. a design run only with Gaussian fields)
+    if (!any(sim_all_plot$distribution == dist & dep_col == dep)) next
+    p = plot_by_method(sim_all_plot, distribution = dist, dep_model = dep, caption = TRUE,
+                       method_labels = labels_ci)
+    print(p)
+    ggsave(glue('coverage_{sim_name}_by_method_{dist}{dep_tag(dep)}.jpg'), plot = p,
+           width = 8, height = 6)
+  }
+}
+
+# coverage by rho for one FWHM: one panel per rho, in increasing order of rho. Only rows
+# without a design, since the dependence designs are run with rho = 0 only
+fwhm_fixed = 2
+sim_rho_plot = sim_all_plot[dep_col == 'none', ] %>%
+  filter(fwhm == fwhm_fixed) %>%
+  mutate(rho_plot = fct_reorder(rho_plot, rho))
+
+for (dist in intersect(c('gaussian', 'chisq1'), unique(sim_rho_plot$distribution))) {
+  # facet_wrap replaces the facet_grid of plot_by_method, so the panels wrap into a grid
+  p = plot_by_method(sim_rho_plot, distribution = dist, dep_model = 'none', caption = TRUE,
+                     method_labels = labels_ci) +
+    facet_wrap(~rho_plot, labeller = label_parsed, ncol = 4) +
+    labs(title = glue('FWHM = {fwhm_fixed}'))
+  print(p)
+  ggsave(glue('coverage_{sim_name}_by_rho_{dist}_fwhm{fwhm_fixed}.jpg'), plot = p,
+         width = 8, height = 8)
+}
+
+```
+
+
+```{r}
+# Type I error rate colored by method: rho = 0, fixed bandwidth rule,
+# one figure per distribution and dependence design present in the data
+sim_all_plot = sim_all %>% filter(M == 'auto', rho == 0)
+# designs in the data; a missing dep_model (or no dep_model column) means no design ('none')
+deps = if ('dep_model' %in% names(sim_all_plot)) {
+  unique(coalesce(as.character(sim_all_plot$dep_model), 'none'))
+} else {
+  'none'
+}
+# file-name tag for each design; no tag without a design, as in the earlier file names
+dep_tags = c(none = '', shift = '_shift', symmetric_shift = '_symmetric')
+
+for (dist in intersect(c('gaussian', 'chisq1'), unique(sim_all_plot$distribution))) {
+  for (dep in deps) {
+    p = plot_by_method(sim_all_plot, facets = ~fwhm, y = power, target = alpha,
+                       ylab = 'Type I error rate', distribution = dist, dep_model = dep,
+                       caption = TRUE, method_labels = labels_test)
+    print(p)
+    ggsave(glue('type1_error_{sim_name}_by_method_{dist}{dep_tags[[dep]]}.jpg'), plot = p,
+           width = 8, height = 6)
+  }
+}
+
+
+
+```
+
+
+```{r}
+# for the paper (labels_ci and labels_test are defined with plot_by_method)
+
+# coverage for one rho, both distributions
+plot_by_method(sim_all %>% filter(M == 'auto', rho == 0.4)%>%
+filter(method !='indep'), facets = distribution~fwhm, dep_model = 'none',
+               method_labels = labels_ci)
+
+ggsave(glue('Fig1_coverage.jpg'), width = 7, height = 5, dpi = 600)
+# type I error, both distributions, independent fields (no dependence design)
+plot_by_method(sim_all %>% filter(M == 'auto', rho == 0)
+#%filter(method %in% c('indep', 'iid'))
+,
+facets = distribution ~ fwhm, dep_model = 'none',
+               y = power, target = alpha, ylab = 'Type I error rate', method_labels = labels_test)
+
+ggsave(glue('Fig2_type1err.jpg'), width = 7, height = 5, dpi = 600)
+# type I error under the symmetric shift design (rho = 0 but X and Y dependent)
+plot_by_method(sim_all %>% filter(M == 'auto', rho == 0),
+facets = distribution ~ fwhm, dep_model = 'symmetric_shift',
+               y = power, target = alpha, ylab = 'Type I error rate', method_labels = labels_test)
+
+ggsave(glue('Fig3_type1err_symmetric.jpg'), width = 7, height = 5, dpi = 600)
+
+# supplementary: coverage by rho for one FWHM, without RFCorr-Indep; one panel per rho in
+# increasing order, and a caption with only the distribution and FWHM.
+# FigS1 for chi^2_1 fields, FigS2 for Gaussian fields
+figS_fwhm = 2
+figS_number = c(chisq1 = 1, gaussian = 2)
+for (dist in names(figS_number)) {
+  p = plot_by_method(sim_all %>%
+                       filter(M == 'auto', fwhm == figS_fwhm, method != 'indep') %>%
+                       mutate(rho_plot = fct_reorder(rho_plot, rho)),
+                     distribution = dist, dep_model = 'none', method_labels = labels_ci) +
+    facet_wrap(~rho_plot, labeller = label_parsed, ncol = 4) +
+    labs(caption = glue('distribution: {dist}, FWHM: {figS_fwhm}'))
+  print(p)
+  ggsave(glue('FigS{figS_number[[dist]]}_coverage_by_rho_{dist}_fwhm{figS_fwhm}.jpg'), plot = p,
+         width = 8, height = 8, dpi = 600)
+}
+
+```
