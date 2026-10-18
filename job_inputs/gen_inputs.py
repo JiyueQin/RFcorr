@@ -1,19 +1,18 @@
 """Create the simulation settings and methods for server jobs.
 
 Saves `setting_df` and `method_df` (joblib) next to this script. Jobs load them and run
-`src.sim_multiple` on a subset of the rows (see test_job/sim.py, or array_job/ to split the rows across a job array). The tables are built with
-`src.make_setting_df` and `src.make_method_df`, the same functions used in main.ipynb, so a
-server run and a notebook run with the same values give the same settings.
+`rc.sim_multiple` on a subset of the rows (see test_job/sim.py, or array_job/ to split the rows across a job array). The tables are built with
+`rc.make_setting_df` and `rc.make_method_df`, the same functions used in the simulation notebook
+(notes/main.ipynb), so a server run and a notebook run with the same values give the same settings.
 """
 import os
-import sys
 
 import joblib
 
-# import src from the parent folder, wherever this script is run from
+import rfcorr as rc
+
+# outputs are saved next to this script, wherever it is run from
 here = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(here, ".."))
-import src
 
 # ---- simulation settings: one row per combination ----
 # side lengths roughly evenly spaced on the log scale: each step multiplies nx by about sqrt(2),
@@ -42,11 +41,11 @@ fwhm_ratio_ls = [2]
 
 dep_ls = [(None, None), ('symmetric_shift', 1)]
 
-setting_df = src.make_setting_df(nx=nx_ls, rho=rho_ls, fwhm=fwhm_ls, n_dim=n_dim_ls,
-                                 len_scale=len_scale_ls, gen_method=gen_method_ls,
-                                 distribution=distribution_ls, noise_df=noise_df_ls,
-                                 trans=trans_ls, mask=mask_ls, fwhm_ratio=fwhm_ratio_ls,
-                                 dep=dep_ls)
+setting_df = rc.make_setting_df(nx=nx_ls, rho=rho_ls, fwhm=fwhm_ls, n_dim=n_dim_ls,
+                                len_scale=len_scale_ls, gen_method=gen_method_ls,
+                                distribution=distribution_ls, noise_df=noise_df_ls,
+                                trans=trans_ls, mask=mask_ls, fwhm_ratio=fwhm_ratio_ls,
+                                dep=dep_ls)
 print(setting_df)
 
 # ---- standard error methods: one row per combination ----
@@ -58,8 +57,8 @@ use_true_rho_ls = [False]
 b_qs_ls = [None]
 constant_ls = [1]
 
-method_df = src.make_method_df(method=method_ls, M=M_ls, kernel=kernel_ls,
-                               use_true_rho=use_true_rho_ls, b_qs=b_qs_ls, constant=constant_ls)
+method_df = rc.make_method_df(method=method_ls, M=M_ls, kernel=kernel_ls,
+                              use_true_rho=use_true_rho_ls, b_qs=b_qs_ls, constant=constant_ls)
 print(method_df)
 
 joblib.dump(setting_df, os.path.join(here, 'setting_df'))

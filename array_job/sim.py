@@ -11,12 +11,10 @@ import time
 
 import joblib
 
+import rfcorr as rc
+
 # paths are relative to this script, so it can be run from any folder
 here = os.path.dirname(os.path.abspath(__file__))
-
-# add parent folder to search path so we can import src
-sys.path.append(os.path.join(here, ".."))
-import src
 
 setting_df = joblib.load(os.path.join(here, '../job_inputs/setting_df'))
 method_df = joblib.load(os.path.join(here, '../job_inputs/method_df'))
@@ -59,7 +57,7 @@ for i in rows.index:
     print(f'----setting {i}: running----')
     start = time.time()
     # one-row table, so setting_id in the result is the row index i
-    result = src.sim_multiple(row, method_df, m_sim=m_sim, return_summary=False, verbose=False)
+    result = rc.sim_multiple(row, method_df, m_sim=m_sim, return_summary=False, verbose=False)
     # save the setting, method_df and m_sim with the result, so a rerun can check that the
     # checkpoint matches the current inputs. Write to a temporary file first, then rename it:
     # reruns ignore .tmp files, and a rename cannot be interrupted halfway, so a job killed

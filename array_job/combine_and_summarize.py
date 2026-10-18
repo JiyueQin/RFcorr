@@ -14,9 +14,9 @@ import sys
 import joblib
 import pandas as pd
 
+import rfcorr as rc
+
 here = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(here, '..'))
-import src
 
 setting_df = joblib.load(os.path.join(here, '../job_inputs/setting_df'))
 method_df = joblib.load(os.path.join(here, '../job_inputs/method_df'))
@@ -65,7 +65,7 @@ group = ['setting_id', 'method_id']
 # mean over replications, which leaves fixed bandwidths unchanged. Done on a copy, so the saved
 # results keep the per-replication bandwidths
 result_avg_m0 = result.assign(M0=result.groupby(group)['M0'].transform('mean'))
-summary = src.results_summary(result_avg_m0, group=group)
+summary = rc.results_summary(result_avg_m0, group=group)
 
 summary.to_excel(os.path.join(here, f'{name}_summary.xlsx'), index=False)
 print(f'saved {name}_summary.xlsx: {len(summary)} rows '
