@@ -12,13 +12,13 @@ rfcorr estimates the correlation between two random fields (maps) on a grid of a
 - `tests/<subpackage>/test_<function>.py` — tests; shared fixtures (`fields_2d`, `method_df`) are in `tests/conftest.py`. Run all with `python -m pytest tests`
 - `examples/<subpackage>/ex_<function>.py` — about three short examples per function, separated by `#%%`
 - `tutorials/` — notebooks walking through the package (`demo.ipynb`)
-- Research code that uses the package (not part of it): `job_inputs/gen_inputs.py` (settings for server jobs), `array_job/` and `test_job/` (Slurm jobs), `plot_sim_results.Rmd`
+- Research code that uses the package (not part of it): `server_jobs/` (everything for the cluster: `job_inputs/gen_inputs.py` builds the settings, `array_job/` is the Slurm job array, `test_job/` a timing test; scripts find `../job_inputs/` relative to themselves, so keep the three folders side by side), `plot_sim_results.Rmd`
 - `notes/` — personal working notes, ignored by git (not published). Put scratch notebooks here, not at the top level. It includes `main.ipynb`, the simulation notebook (runs and summaries saved to `../results/`; paths are relative to `notes/`)
 
 ## Public and Development Functions
 - `rc.corr` is the public function: only the paper's methods (Bartlett kernel, `M='optimal_rate'` or a fixed int/tuple lag, `constant`, `mask`). It validates its arguments and calls `rc.corr_dev`
 - `rc.corr_dev` is the development version with every option (other kernels, `true_rho`, `check`, `b_qs`, `standardize`, and all lag rules). The simulation functions call it. Put new or experimental options here, and promote them to `rc.corr` only once they are verified and in the paper
-- Lag rules accepted by `rc.corr_dev` / `rc.get_se` but not user facing: `'auto'` (earlier name of `'optimal_rate'`, still used in `job_inputs/` and saved results, so keep it), the legacy `'cubic_root'` and `'linear'`, and `'plugin'` (still under development and not verified). Document them only in development docstrings and here, not in the README or public examples
+- Lag rules accepted by `rc.corr_dev` / `rc.get_se` but not user facing: `'auto'` (earlier name of `'optimal_rate'`, still used in `server_jobs/job_inputs/` and saved results, so keep it), the legacy `'cubic_root'` and `'linear'`, and `'plugin'` (still under development and not verified). Document them only in development docstrings and here, not in the README or public examples
 - `get_se`, `get_est_exp_ls`, `est_exp_X0Yh`, `kernel`, `kernel_weights`, `plugin_bandwidth` and `canonical_se_method` are development building blocks; their docstrings say so
 
 ## Code Structure Rules
@@ -82,7 +82,7 @@ def function_name(arg1: type1, arg2: type2, optional_arg: type3 = default_value)
 5. Write examples in `examples/<subpackage>/ex_<function>.py` (about three simple examples separated by `#%%`) and run the file. Do not skip running it
 6. Run the full suite: `python -m pytest tests`
 - When modifying a function, keep existing tests and examples working unless told otherwise, and update them if the behavior changes on purpose
-- Results in `results/` and `job_inputs/` were produced with this code. Changes to estimation or simulation functions must not change their numerical output unless that is the intent; say so explicitly when it is
+- Results in `results/` and `server_jobs/job_inputs/` were produced with this code. Changes to estimation or simulation functions must not change their numerical output unless that is the intent; say so explicitly when it is
 
 ### Setup
 - Install in editable mode from the repository root: `uv pip install -e ".[jobs,dev]"` (or `pip install -r requirements.txt` for the pinned server environment)

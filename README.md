@@ -98,8 +98,8 @@ Each function's docstring describes its arguments and output, e.g. `help(rc.corr
 
 ### Simulation scripts
 The repository also holds the code used for the simulation studies, which uses the package but is not part of it:
-- `job_inputs/gen_inputs.py`: builds the settings and methods tables for server jobs
-- `array_job/`: a Slurm job array that splits the settings across tasks with checkpoints, and `combine_and_summarize.py` to collect the results. Install the pinned environment on the server with `pip install -r requirements.txt` from the repository root
+- `server_jobs/job_inputs/gen_inputs.py`: builds the settings and methods tables for server jobs
+- `server_jobs/array_job/`: a Slurm job array that splits the settings across tasks with checkpoints, and `combine_and_summarize.py` to collect the results. Install the pinned environment on the server with `pip install -r requirements.txt` from the repository root
 - `plot_sim_results.Rmd`: plots of the simulation results
 
 ## Related Publication and Citation

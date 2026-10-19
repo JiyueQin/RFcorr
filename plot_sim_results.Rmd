@@ -18,10 +18,10 @@ theme_set(theme_bw() + theme(legend.position = 'bottom'))
 
 
 ```{r}
-# server job array run (see array_job/combine_and_summarize.py); overrides the file above.
+# server job array run (see server_jobs/array_job/combine_and_summarize.py); overrides the file above.
 # sim_name is only used to name the saved figures here
 sim_name = '2d_expanse_m1000'
-file ='C:/Users/jiyue/OneDrive - UC San Diego/python_projects/corr/array_job/sim_summary.xlsx'
+file ='C:/Users/jiyue/OneDrive - UC San Diego/python_projects/corr/server_jobs/array_job/sim_summary.xlsx'
 
 sim_all_raw = read_xlsx(file)
 
