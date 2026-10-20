@@ -12,7 +12,7 @@ rfcorr estimates the correlation between two random fields (maps) on a grid of a
 - `tests/<subpackage>/test_<function>.py` — tests; shared fixtures (`fields_2d`, `method_df`) are in `tests/conftest.py`. Run all with `python -m pytest tests`
 - `examples/<subpackage>/ex_<function>.py` — about three short examples per function, separated by `#%%`
 - `tutorials/` — notebooks walking through the package (`demo.ipynb`)
-- Research code that uses the package (not part of it): `server_jobs/` (everything for the cluster: `job_inputs/gen_inputs.py` builds the settings, `array_job/` is the Slurm job array, `test_job/` a timing test; scripts find `../job_inputs/` relative to themselves, so keep the three folders side by side), `plot_sim_results.Rmd`
+- Research code that uses the package (not part of it): `server_jobs/` (everything for the cluster: `job_inputs/gen_inputs.py` builds the settings, `array_job/` is the Slurm job array, `test_job/` a timing test; scripts find `../job_inputs/` relative to themselves, so keep the three folders side by side), `plot_simulation_results/` (`plot_sim_results.Rmd` and its Python translation `plot_sim_results.ipynb`; keep the two in sync, and note the notebook saves figures to `figures/` next to it)
 - `notes/` — personal working notes, ignored by git (not published). Put scratch notebooks here, not at the top level. It includes `main.ipynb`, the simulation notebook (runs and summaries saved to `../results/`; paths are relative to `notes/`)
 
 ## Public and Development Functions

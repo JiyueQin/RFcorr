@@ -19,6 +19,8 @@ dependencies = [
 [project.optional-dependencies]
 # server simulation scripts (job_inputs/, array_job/) and saving summaries to Excel
 jobs = ["joblib", "openpyxl"]
+# plot_simulation_results/plot_sim_results.ipynb
+plots = ["matplotlib", "openpyxl"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
