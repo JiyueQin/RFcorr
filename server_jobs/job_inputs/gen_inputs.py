@@ -18,9 +18,13 @@ here = os.path.dirname(os.path.abspath(__file__))
 # side lengths roughly evenly spaced on the log scale: each step multiplies nx by about sqrt(2),
 # so N (about nx^2) roughly doubles. Errors shrink with ratios of N (Monte Carlo error like
 # N^(-1/2), Bartlett bias more slowly), so equal ratios are equally informative, and the points
-# spread evenly on the log-N axis of the plots. 300 is kept as the endpoint because the bias
+# spread evenly on the log-N axis of the plots. Large sizes are included because the bias
 # decays slowly.
-nx_ls = [25, 35, 50, 70, 100, 140, 200, 300]
+# Add new sizes only at the END of the list: setting_df is ordered by nx, so appending keeps the
+# row numbers of the existing settings, and their checkpoints in array_job/checkpoints/ are reused
+# (the first run used [25, ..., 300]; 420 and 600 were appended later). Inserting a size in the
+# middle renumbers the rows after it, and those settings would be rerun.
+nx_ls = [25, 35, 50, 70, 100, 140, 200, 300, 420, 600]
 rho_ls = [0, 0.1, 0.2, 0.4, 0.6, 0.8, 0.9, -0.1, -0.2, -0.4, -0.6, -0.8, -0.9]
 fwhm_ls = [1, 2, 3, 4]
 n_dim_ls = [2]

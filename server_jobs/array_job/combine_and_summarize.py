@@ -22,7 +22,7 @@ setting_df = joblib.load(os.path.join(here, '../job_inputs/setting_df'))
 method_df = joblib.load(os.path.join(here, '../job_inputs/method_df'))
 ckpt_dir = os.path.join(here, 'checkpoints')
 # must match N_TASKS in job.submit; used only to list which tasks to resubmit
-n_tasks = 50
+n_tasks = 112
 
 # ---- combine the checkpoints ----
 results, missing, out_of_date, m_sims = [], [], [], set()
