@@ -21,7 +21,12 @@ theme_set(theme_bw() + theme(legend.position = 'bottom'))
 # server job array run (see server_jobs/array_job/combine_and_summarize.py); overrides the file above.
 # sim_name is only used to name the saved figures here
 sim_name = '2d_expanse_m1000'
-file ='C:/Users/jiyue/OneDrive - UC San Diego/python_projects/corr/server_jobs/array_job/sim_summary.xlsx'
+# paths relative to the repository root, which here::here() finds (the folder with .git), so they
+# work whatever the working directory of the R session
+file = here::here('server_jobs', 'array_job', 'sim_summary.xlsx')
+# all figures are saved here (figures/ next to this file, as in plot_sim_results.ipynb)
+fig_dir = here::here('plot_simulation_results', 'figures')
+dir.create(fig_dir, showWarnings = FALSE)
 
 sim_all_raw = read_xlsx(file)
 
@@ -149,7 +154,7 @@ for (dist in intersect(c('gaussian', 'chisq1'), unique(sim_all_plot$distribution
     p = plot_by_method(sim_all_plot, distribution = dist, dep_model = dep, caption = TRUE,
                        method_labels = labels_ci)
     print(p)
-    ggsave(glue('coverage_{sim_name}_by_method_{dist}{dep_tag(dep)}.jpg'), plot = p, width = 8, height = 6)
+    ggsave(file.path(fig_dir, glue('coverage_{sim_name}_by_method_{dist}{dep_tag(dep)}.jpg')), plot = p, width = 8, height = 6)
   }
 }
 
@@ -167,7 +172,7 @@ for (dist in intersect(c('gaussian', 'chisq1'), unique(sim_rho_plot$distribution
     facet_wrap(~rho_plot, labeller = label_parsed, ncol = 4) +
     labs(title = glue('FWHM = {fwhm_fixed}'))
   print(p)
-  ggsave(glue('coverage_{sim_name}_by_rho_{dist}_fwhm{fwhm_fixed}.jpg'), plot = p,
+  ggsave(file.path(fig_dir, glue('coverage_{sim_name}_by_rho_{dist}_fwhm{fwhm_fixed}.jpg')), plot = p,
          width = 8, height = 8)
 }
 
@@ -193,7 +198,7 @@ for (dist in intersect(c('gaussian', 'chisq1'), unique(sim_all_plot$distribution
                        ylab = 'Type I error rate', distribution = dist, dep_model = dep,
                        caption = TRUE, method_labels = labels_test)
     print(p)
-    ggsave(glue('type1_error_{sim_name}_by_method_{dist}{dep_tags[[dep]]}.jpg'), plot = p,
+    ggsave(file.path(fig_dir, glue('type1_error_{sim_name}_by_method_{dist}{dep_tags[[dep]]}.jpg')), plot = p,
            width = 8, height = 6)
   }
 }
@@ -211,7 +216,7 @@ plot_by_method(sim_all %>% filter(M == 'auto', rho == 0.4)%>%
 filter(method !='indep'), facets = distribution~fwhm, dep_model = 'none',
                method_labels = labels_ci)
 
-ggsave(glue('Fig1_coverage.jpg'), width = 7, height = 5, dpi = 600)
+ggsave(file.path(fig_dir, glue('Fig1_coverage.jpg')), width = 7, height = 5, dpi = 600)
 # type I error, both distributions, independent fields (no dependence design)
 plot_by_method(sim_all %>% filter(M == 'auto', rho == 0)
 #%filter(method %in% c('indep', 'iid'))
@@ -219,13 +224,13 @@ plot_by_method(sim_all %>% filter(M == 'auto', rho == 0)
 facets = distribution ~ fwhm, dep_model = 'none',
                y = power, target = alpha, ylab = 'Type I error rate', method_labels = labels_test)
 
-ggsave(glue('Fig2_type1err.jpg'), width = 7, height = 5, dpi = 600)
+ggsave(file.path(fig_dir, glue('Fig2_type1err.jpg')), width = 7, height = 5, dpi = 600)
 # type I error under the symmetric shift design (rho = 0 but X and Y dependent)
 plot_by_method(sim_all %>% filter(M == 'auto', rho == 0),
 facets = distribution ~ fwhm, dep_model = 'symmetric_shift',
                y = power, target = alpha, ylab = 'Type I error rate', method_labels = labels_test)
 
-ggsave(glue('Fig3_type1err_symmetric.jpg'), width = 7, height = 5, dpi = 600)
+ggsave(file.path(fig_dir, glue('Fig3_type1err_symmetric.jpg')), width = 7, height = 5, dpi = 600)
 
 # supplementary: coverage by rho for one FWHM, without RFCorr-Indep; one panel per rho in
 # increasing order, and a caption with only the distribution and FWHM.
@@ -240,7 +245,7 @@ for (dist in names(figS_number)) {
     facet_wrap(~rho_plot, labeller = label_parsed, ncol = 4) +
     labs(caption = glue('distribution: {dist}, FWHM: {figS_fwhm}'))
   print(p)
-  ggsave(glue('FigS{figS_number[[dist]]}_coverage_by_rho_{dist}_fwhm{figS_fwhm}.jpg'), plot = p,
+  ggsave(file.path(fig_dir, glue('FigS{figS_number[[dist]]}_coverage_by_rho_{dist}_fwhm{figS_fwhm}.jpg')), plot = p,
          width = 8, height = 8, dpi = 600)
 }
 

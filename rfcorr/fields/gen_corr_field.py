@@ -92,11 +92,21 @@ def gen_corr_field(rho: float,
         positive and tests assuming independence (Clifford-type) are
         anti-conservative. With 'shift' the cross term is negative and those tests
         are conservative.
+        'sum_diff': U and V are replaced by their normalized sum and difference,
+        (U + V) / sqrt(2) and (U - V) / sqrt(2), so that X = (U + V) / sqrt(2) and, with
+        rho = 0, Y = (U - V) / sqrt(2). U and V have the same variance, so X and Y keep it
+        and are uncorrelated at every location. Their lag-k cross-correlation is
+        (r_U(k) - r_V(k)) / 2, so with fwhm_ratio != 1 they are dependent, the cross
+        term above is positive, and tests assuming independence are anti-conservative.
+        With fwhm_ratio = 1 and Gaussian fields X and Y are independent, while
+        non-Gaussian fields (e.g. trans='square') are dependent even then. Works with any
+        distribution and trans.
         So rho = 0 gives X and Y uncorrelated but dependent. 'quad' and 'exp'
         require Gaussian U and trans=None.
     dep_strength : float, optional (default=1.0)
         Weight lam in [0, 1] of the dependent part of W; lam = 0 gives W = V
-        (independence). Only used when `dep_model` is not None.
+        (independence). Used with 'quad', 'exp', 'shift' and 'symmetric_shift', not
+        with 'sum_diff'.
     shift_lag : int or tuple of int, optional (default=1)
         Lag h for dep_model='shift' or 'symmetric_shift'. An int k means a shift of
         k grid points along the first axis. Only used for these two models.
@@ -206,6 +216,11 @@ def gen_corr_field(rho: float,
         # D rescaled to the variance of U; V has the same variance as U, so W does too
         W = lam * D * np.sqrt(var_U / var_D)
         V = W + np.sqrt(max(0.0, 1.0 - lam**2)) * V
+    elif dep_model == "sum_diff":
+        # normalized sum and difference of the independent fields U and V, which have the
+        # same variance: both keep that variance and are uncorrelated at every location, but
+        # are dependent when U and V differ in smoothness (fwhm_ratio != 1) or are non-Gaussian
+        U, V = (U + V) / np.sqrt(2), (U - V) / np.sqrt(2)
     elif dep_model is not None:
         if distribution != "gaussian" or trans is not None:
             raise ValueError("dep_model requires distribution='gaussian' and trans=None")
@@ -219,7 +234,8 @@ def gen_corr_field(rho: float,
             e = np.exp(1)
             W = lam * (np.exp(U_std) - np.sqrt(e) - np.sqrt(e) * U_std) / np.sqrt(e * (e - 2))
         else:
-            raise ValueError("dep_model must be None, 'quad', 'exp', 'shift', or 'symmetric_shift'")
+            raise ValueError("dep_model must be None, 'quad', 'exp', 'shift', 'symmetric_shift', "
+                             "or 'sum_diff'")
         # unit-variance residual, uncorrelated with U but dependent on it when lam > 0
         V = (W + np.sqrt(max(0.0, 1.0 - lam**2)) * V_std) * sd
 

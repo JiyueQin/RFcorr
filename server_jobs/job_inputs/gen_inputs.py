@@ -8,6 +8,7 @@ Saves `setting_df` and `method_df` (joblib) next to this script. Jobs load them 
 import os
 
 import joblib
+import pandas as pd
 
 import rfcorr as rc
 
@@ -50,6 +51,19 @@ setting_df = rc.make_setting_df(nx=nx_ls, rho=rho_ls, fwhm=fwhm_ls, n_dim=n_dim_
                                 distribution=distribution_ls, noise_df=noise_df_ls,
                                 trans=trans_ls, mask=mask_ls, fwhm_ratio=fwhm_ratio_ls,
                                 dep=dep_ls)
+
+# ---- later additions, appended after the rows above ----
+# Each block is built separately and appended, so the rows above keep their numbers and their
+# checkpoints are reused. Add new blocks only at the END.
+# sum_diff design (rho = 0): X = (U + V) / sqrt(2), Y = (U - V) / sqrt(2), with V smoothed at
+# fwhm / fwhm_ratio. shift_lag is not used by this design; 1 keeps the column's type the same as
+# above.
+sum_diff_df = rc.make_setting_df(nx=nx_ls, rho=[0], fwhm=fwhm_ls, n_dim=n_dim_ls,
+                                 len_scale=len_scale_ls, gen_method=gen_method_ls,
+                                 distribution=distribution_ls, noise_df=noise_df_ls,
+                                 trans=trans_ls, mask=mask_ls, fwhm_ratio=[2, 4],
+                                 dep=[('sum_diff', 1)])
+setting_df = pd.concat([setting_df, sum_diff_df], ignore_index=True)
 print(setting_df)
 
 # ---- standard error methods: one row per combination ----

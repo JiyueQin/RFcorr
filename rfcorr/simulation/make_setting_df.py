@@ -52,7 +52,8 @@ def make_setting_df(nx: Sequence[int],
     fwhm_ratio : list of float, optional (default=(1,))
         Ratios of the smoothing of the two fields (see rc.gen_corr_field).
     dep : list of tuple, optional (default=((None, None),))
-        Pairs (dep_model, shift_lag), e.g. ('shift', 1) or ('symmetric_shift', 1);
+        Pairs (dep_model, shift_lag), e.g. ('shift', 1), ('symmetric_shift', 1) or
+        ('sum_diff', None);
         (None, None) means X and Y depend only through rho.
 
     ---------------------------------------------------------------------------

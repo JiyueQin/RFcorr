@@ -9,7 +9,7 @@ def test_values():
     assert defaults["se_methods"] == ("general", "gauss", "indep", "iid")
     assert dict(defaults["se_method_aliases"]) == {
         "hac": "general", "hac_gaussian": "gauss", "huristic": "indep"}
-    assert defaults["rho_zero_dep_models"] == ("shift", "symmetric_shift")
+    assert defaults["rho_zero_dep_models"] == ("shift", "symmetric_shift", "sum_diff")
 
 
 def test_aliases_point_to_known_methods():

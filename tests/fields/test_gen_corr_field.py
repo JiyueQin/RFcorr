@@ -122,5 +122,51 @@ def test_shift_design_invalid_settings(dep_model):
         rc.gen_corr_field(0, dim=(20, 20), dep_model=dep_model, shift_lag=(1, 0, 0))
 
 
+@pytest.mark.parametrize("trans", [None, "square"])
+@pytest.mark.parametrize("rho", [0.0, 0.4])
+def test_sum_diff_keeps_target_correlation(rho, trans):
+    # U and V have the same variance, so their sum and difference are uncorrelated
+    assert _mean_corr(rho, trans, "sum_diff") == pytest.approx(rho, abs=0.015)
+
+
+def test_sum_diff_keeps_variance():
+    X, Y = rc.gen_corr_field(0, dim=(200, 200), fwhm=2, fwhm_ratio=2, seed=0,
+                             dep_model="sum_diff")
+    assert X.var() == pytest.approx(1.0, rel=0.1)
+    assert Y.var() == pytest.approx(1.0, rel=0.1)
+
+
+@pytest.mark.parametrize("fwhm_ratio", [1, 2])
+def test_sum_diff_cross_correlation(fwhm_ratio):
+    # with rho = 0 and Gaussian fields, corr(X_s, Y_{s+e1}) = (r_U - r_V) / 2: zero when U and V
+    # are equally smooth (then X and Y are independent), positive when V is rougher
+    r_U = rc.gaussian_filter_acf((1, 0), 3)
+    r_V = rc.gaussian_filter_acf((1, 0), 3 / fwhm_ratio)
+    vals = []
+    for s in range(50):
+        X, Y = rc.gen_corr_field(0, dim=(60, 60), fwhm=3, fwhm_ratio=fwhm_ratio, seed=s,
+                                 dep_model="sum_diff")
+        vals.append(np.corrcoef(X[:-1].ravel(), Y[1:].ravel())[0, 1])
+    assert np.mean(vals) == pytest.approx((r_U - r_V) / 2, abs=0.02)
+
+
+def test_sum_diff_non_gaussian_is_dependent():
+    # chi^2_1 fields: uncorrelated at every lag when U and V are equally smooth, but dependent,
+    # e.g. the squares of X and Y are correlated
+    vals = []
+    for s in range(30):
+        X, Y = rc.gen_corr_field(0, dim=(60, 60), fwhm=2, fwhm_ratio=1, seed=s, trans="square",
+                                 dep_model="sum_diff")
+        Xc, Yc = X - X.mean(), Y - Y.mean()
+        vals.append(np.corrcoef((Xc**2).ravel(), (Yc**2).ravel())[0, 1])
+    assert abs(np.mean(vals)) > 0.1
+
+
+def test_sum_diff_is_kept_only_with_rho_zero():
+    setting_df = rc.make_setting_df(nx=[20], rho=[0, 0.4], fwhm=[2],
+                                    dep=[(None, None), ("sum_diff", None)])
+    assert (setting_df.loc[setting_df["dep_model"] == "sum_diff", "rho"] == 0).all()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

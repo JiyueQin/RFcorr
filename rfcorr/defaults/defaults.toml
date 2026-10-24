@@ -10,7 +10,7 @@ se_methods = ["general", "gauss", "indep", "iid"]
 
 # Dependence designs that are only meaningful with rho = 0 (see rc.gen_corr_field):
 # rc.make_setting_df keeps them only in rows with rho = 0.
-rho_zero_dep_models = ["shift", "symmetric_shift"]
+rho_zero_dep_models = ["shift", "symmetric_shift", "sum_diff"]
 
 # Earlier names of the standard error methods, still accepted so saved method tables keep working.
 [se_method_aliases]

@@ -87,7 +87,7 @@ def sim_single(method_df: pd.DataFrame,
         partly rougher.
     dep_model : str or None, optional (default=None)
         Dependence beyond correlation between X and Y: None, 'quad', 'exp', 'shift',
-        or 'symmetric_shift' (see rc.gen_corr_field). With rho = 0, X and Y are then
+        'symmetric_shift', or 'sum_diff' (see rc.gen_corr_field). With rho = 0, X and Y are then
         uncorrelated but dependent.
     dep_strength : float, optional (default=1.0)
         Weight in [0, 1] of the dependent part (see rc.gen_corr_field).
