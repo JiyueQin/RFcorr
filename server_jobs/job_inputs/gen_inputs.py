@@ -64,6 +64,16 @@ sum_diff_df = rc.make_setting_df(nx=nx_ls, rho=[0], fwhm=fwhm_ls, n_dim=n_dim_ls
                                  trans=trans_ls, mask=mask_ls, fwhm_ratio=[2, 4],
                                  dep=[('sum_diff', 1)])
 setting_df = pd.concat([setting_df, sum_diff_df], ignore_index=True)
+# regular design (X and Y dependent only through rho) with V smoothed at fwhm / 4, all rho
+ratio4_df = rc.make_setting_df(nx=nx_ls, rho=rho_ls, fwhm=fwhm_ls, n_dim=n_dim_ls,
+                               len_scale=len_scale_ls, gen_method=gen_method_ls,
+                               distribution=distribution_ls, noise_df=noise_df_ls,
+                               trans=trans_ls, mask=mask_ls, fwhm_ratio=[4],
+                               dep=[(None, None)])
+# all-None dep_model and shift_lag columns would be object and upcast the existing columns in the
+# concat, so the existing rows would no longer match their checkpoints
+ratio4_df = ratio4_df.astype(setting_df.dtypes.to_dict())
+setting_df = pd.concat([setting_df, ratio4_df], ignore_index=True)
 print(setting_df)
 
 # ---- standard error methods: one row per combination ----

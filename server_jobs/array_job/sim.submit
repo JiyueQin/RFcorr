@@ -7,7 +7,7 @@
 #SBATCH --mem=2G
 #SBATCH --account=csd864
 #SBATCH --export=ALL
-#SBATCH -t 4:00:00
+#SBATCH -t 8:00:00
 # one task per array index; N_TASKS must match the size of the array below
 #SBATCH --array=0-111
 N_TASKS=112

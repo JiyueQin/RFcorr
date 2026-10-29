@@ -244,13 +244,17 @@ facets = distribution ~ fwhm, dep_model = 'symmetric_shift',
 
 ggsave(file.path(fig_dir, glue('Fig3_type1err_symmetric.jpg')), width = 7, height = 5, dpi = 600)
 # type I error under the sum-difference design (rho = 0 but X and Y dependent), with V smoothed
-# at FWHM / 2 as in the other designs (change fig4_ratio to 4 for the stronger contrast)
-fig4_ratio = 2
-plot_by_method(sim_all %>% filter(M == 'auto', rho == 0, fwhm_ratio == fig4_ratio),
-facets = distribution ~ fwhm, dep_model = 'sum_diff',
-               y = power, target = alpha, ylab = 'Type I error rate', method_labels = labels_test)
-
-ggsave(file.path(fig_dir, glue('Fig4_type1err_sum_diff.jpg')), width = 7, height = 5, dpi = 600)
+# at FWHM / fig4_ratio: FWHM / 2 as in the other designs, and FWHM / 4 for the stronger contrast
+# (saved with a '_ratio4' suffix)
+fig4_tags = c('2' = '', '4' = '_ratio4')
+for (fig4_ratio in as.numeric(names(fig4_tags))) {
+  p = plot_by_method(sim_all %>% filter(M == 'auto', rho == 0, fwhm_ratio == fig4_ratio),
+                     facets = distribution ~ fwhm, dep_model = 'sum_diff',
+                     y = power, target = alpha, ylab = 'Type I error rate', method_labels = labels_test)
+  print(p)
+  ggsave(file.path(fig_dir, glue('Fig4_type1err_sum_diff{fig4_tags[[as.character(fig4_ratio)]]}.jpg')),
+         plot = p, width = 7, height = 5, dpi = 600)
+}
 
 # supplementary: coverage by rho for one FWHM, without RFCorr-Indep; one panel per rho in
 # increasing order, and a caption with only the distribution and FWHM.

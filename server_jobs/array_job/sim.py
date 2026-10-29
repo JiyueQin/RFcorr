@@ -1,7 +1,7 @@
 """Run one task's share of the settings, with a checkpoint per setting.
 
 Usage: python sim.py TASK_ID N_TASKS (both default to 0 and 1, i.e. all settings in one job).
-The settings are split across N_TASKS tasks (see job.submit for a Slurm job array). When all
+The settings are split across N_TASKS tasks (see sim.submit for a Slurm job array). When all
 tasks are done, run combine_and_summarize.py to collect the checkpoints into sim.result and
 summarize them in sim_summary.xlsx.
 """
